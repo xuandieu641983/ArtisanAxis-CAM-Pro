@@ -1,7 +1,9 @@
 #include "rhino.h"
 #include <QJsonArray>
 #include <cmath>
-
+#if defined(_WIN64) && defined(WIN32)
+#undef WIN32
+#endif
 #ifdef ARTISAN_RHINO
 #include "opennurbs.h"
 #endif
