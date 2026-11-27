@@ -1,10 +1,13 @@
 #include "rhino.h"
 #include <QJsonArray>
 #include <cmath>
+
 #ifdef ARTISAN_RHINO
 #include "opennurbs.h"
 #endif
-
+#if defined(_WIN64) && defined(WIN32)
+#undef WIN32
+#endif
 QJsonObject readRhinoSurface(const QString& path){
 #ifdef ARTISAN_RHINO
     ON::Begin();
