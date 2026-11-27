@@ -1,8 +1,18 @@
-# ArtisanAxis CAM Pro · v1.0.1
+# ArtisanAxis CAM Pro · v1.1.0
 
-Mã nguồn native C++20 / Qt 6. Chọn Máy/Post, phôi và dao, chọn **4 Trục đồng thời (XYZA)** hoặc **5 Trục đồng thời (XYZAB)** ngay cạnh nút **Tính**. Trợ lý CAM và bộ xuất dùng cùng chế độ. Hồ sơ máy chỉ có một post tương thích sẽ chọn chế độ tương ứng.
+Mã nguồn native C++20 / Qt 6 cho xưởng Xuân Diệu CNC.
 
-Trong lúc CAMWorker chạy, thanh công cụ, menu và cây dự án tạm khóa các thao tác. **Hủy tác vụ** dừng worker và giữ kết quả hợp lệ từ lần tính trước. Khi worker trả kết quả hoặc dừng, các thao tác được mở lại.
+- **Mở STL** tự căn phôi hộp theo giới hạn 3D của mẫu. Lấy gốc, xoay và scale cập nhật phôi khi bật chế độ tự ôm. Chỉnh phôi bằng tay sẽ giữ kích thước đã nhập cho đến khi chọn **Thiết lập → Tự ôm phôi theo mẫu STL**.
+- Chọn hồ sơ máy, **4 Trục đồng thời (XYZA)** hoặc **5 Trục đồng thời (XYZAB)** rồi tích các đường trong cây dự án. Có thể chọn chiến lược theo từng công đoạn. Với một chương trình có cả lượt 4X và 5X, post 5X ghi B = 0 trong các lượt 4X.
+- **Lưu & Đóng** chỉ lưu cấu hình. Dùng **Tính các đường đã tích**, **Tính riêng đường này** hoặc lệnh **Tự động tính toàn bộ** trong Trợ lý CAM để chạy. Hai nút xuất riêng trong Trợ lý tính và kiểm chứng nhóm được chọn trước khi ghi tệp.
+- CAMWorker gửi tiến độ thực qua từng giai đoạn. Hủy giữ kết quả hợp lệ trước đó nếu cấu hình dự án vẫn khớp. Dùng thanh mô phỏng đáy cửa sổ để kéo tới vị trí bất kỳ hoặc chạy từ 1× đến 20×. Thời gian hiển thị là ước tính từ chiều dài chuyển động và tốc độ, không dùng mô hình tăng giảm tốc của bộ điều khiển.
+- Dùng **Thiết lập → Dựng mặt bọc STL** để xem lưới bọc bán trong suốt. Bản build OpenNURBS nhận thêm mặt dẫn **.3dm**. Dùng **Nhật ký NC** để xem kết quả kiểm chứng và các lần tách lượt.
+
+## Tính xoắn ốc dài
+
+Lõi giữ tối đa 4.096 lớp ứng viên trong cửa sổ nối, dùng BVH chia sẻ và tính truy vấn ứng viên theo lô đa luồng. Điểm nối được mang sang cửa sổ tiếp theo mà không phát lệnh nhấc riêng. Quá trình vẫn có thể tách lượt khi mất tiếp xúc hoặc không tìm được đường nối hợp lệ. Đường dao đã chốt và dữ liệu kiểm chứng NC dùng bộ nhớ theo kích thước chương trình. GUI nhận phần xem trước hạn chế kích thước, còn NC đủ chương trình được ghi qua tệp tạm.
+
+`LongSpiral250mm` chạy ca 250 mm, bước dọc trục 0,22 mm. Chạy thêm `LongSpiralCheck --stress` để thử hơn 5 triệu điểm trên mẫu tổng hợp. Xem số đo trong `NGHIEM_THU_FINAL.md`.
 
 ## Biên dịch
 
@@ -16,7 +26,7 @@ Thêm -Rhino3dm để bật OpenNURBS tĩnh. Mặc định chỉ cần Qt 6 và 
     cmake --build build --config Release
     ctest --test-dir build -C Release -V
 
-Có thể bật Rhino bằng -DARTISAN_RHINO=ON, dùng checkout đã ghim với -DFETCHCONTENT_SOURCE_DIR_ARTISAN_OPENNURBS=<checkout>. Kịch bản Windows kế thừa từ Mốc 2. Việc biên dịch và chạy kiểm thử lần bàn giao được thực hiện trên Linux.
+Có thể bật Rhino bằng -DARTISAN_RHINO=ON, dùng checkout đã ghim với -DFETCHCONTENT_SOURCE_DIR_ARTISAN_OPENNURBS=<checkout>. Workflow GitHub Actions bật OpenNURBS mặc định. Bản bàn giao đã được biên dịch và chạy kiểm thử trên Linux. Kết quả của Windows x64 cần được ghi nhận khi chạy workflow.
 
 ## Hệ tọa độ, post và kiểm chứng
 
@@ -24,7 +34,7 @@ Có thể bật Rhino bằng -DARTISAN_RHINO=ON, dùng checkout đã ghim với 
 - 5X hiện áp dụng máy bàn A + đầu B vuông góc. Mô hình tay đòn giả định đòn dọc trục dao trung hòa. Tọa độ cơ khí suy ra từ mũi, chênh lệch tay đòn so với B = 0 và workOffsetMachine [X,Y,Z] nhập trực tiếp ở Hồ sơ máy. Bộ xuất khóa khi tọa độ này chưa được xác nhận hoặc thiếu giới hạn Z. Máy đầu–đầu, bàn–bàn, tay đòn lệch tâm khỏi trục dao và G43.5 chưa được mô hình hóa.
 - Các profile CM600, Syntec và Fanuc xuất mẫu G43.4 H1/G49 theo quy ước XYZ mũi trong hệ phôi. Profile Siemens dùng TRAORI/TRAFOOF theo cùng mô hình. Profile không RTCP xuất XYZ đã bù chênh tay đòn. Các mẫu chưa được chạy trên firmware thực tế tương ứng. A/B xuất theo dấu cấu hình.
 - G00 dịch ngang hoặc đổi A/B yêu cầu cao trình an toàn. G01 dùng cho cắt xoắn ốc đồng thời. Khối khởi đầu giả định máy bắt đầu ở tư thế trung hòa đã an toàn. Phần mềm không có vị trí máy thật trước khối đầu. Cần đối chiếu thực tế bật/hủy RTCP, hành trình, gốc máy, thủ tục thay dao và gá trước khi đưa vào sản xuất.
-- Sau khi lưu, ứng dụng tự đọc lại chính tệp vừa ghi. **Đọc lại NC** cũng cho phép mở file đã lưu và xác minh với STL, dao và máy đang chọn. Bộ đọc chấp nhận tập con phát sinh của v1.0.0 (G00/G01 tuyệt đối, đầy đủ tọa độ, lệnh bù, spindle, tool, kết thúc). Nó dựng lại từ số đã làm tròn trong NC, xét hành trình và kiểm tra sweep trên STL. Lỗi có số dòng. Chu trình tổng quát, arc và macro chưa được hỗ trợ. Mô hình nội suy là XYZ và góc đồng bộ trong khối; quy tắc nội suy firmware vẫn cần đối chiếu.
+- Sau khi lưu, ứng dụng tự đọc lại chính tệp vừa ghi. **Đọc lại NC** cũng cho phép mở file đã lưu và xác minh với STL, dao và máy đang chọn. Bộ đọc chấp nhận tập con phát sinh của ArtisanAxis (G00/G01 tuyệt đối, đầy đủ tọa độ, lệnh bù, spindle, tool, kết thúc). Nó dựng lại từ số đã làm tròn trong NC, xét hành trình và kiểm tra sweep trên STL. Lỗi có số dòng. Chu trình tổng quát, arc và macro chưa được hỗ trợ. Mô hình nội suy là XYZ và góc đồng bộ trong khối; quy tắc nội suy firmware vẫn cần đối chiếu.
 
 ## Đường dao, mô phỏng và nhật ký
 

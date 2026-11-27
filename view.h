@@ -8,6 +8,7 @@
 #include <QPoint>
 #include <QVector3D>
 #include <functional>
+#include <array>
 #include <vector>
 
 class QMouseEvent;
@@ -33,6 +34,8 @@ public:
     void setModelVisible(bool yes) { modelVisible_ = yes; update(); }
     void setOverlay(std::vector<float> paths,std::vector<float> surface);
     void setSimStock(std::vector<float> intact,std::vector<float> excess,std::vector<float> gouge,double pitch=0);
+    void setPlayback(QVector3D tip,double a,double b,bool axisY,QVector3D pivot,double diameter,double overhang,double holder,double ball,double halfAngle,double flute);
+    void clearPlayback(){if(playback_){playback_=false;update();}}
     void fit();
     void setCamera(const QString &view);
 
@@ -58,6 +61,11 @@ private:
     quint64 loadGeneration_ = 0;
     bool stockVisible_ = true, modelVisible_ = true;
     bool modelDirty_ = true, stockDirty_ = true, overlayDirty_=true, ready_ = false;
+    bool playback_=false;
+    QMatrix4x4 partRotation_,toolPose_;
+    std::array<double,6> cutterProfile_{};
+    std::vector<float> cutterMesh_;
+    bool cutterDirty_=true;
     QOpenGLShaderProgram *program_ = nullptr;
-    QOpenGLBuffer modelBuffer_, stockFaceBuffer_, stockEdgeBuffer_,pathBuffer_,surfaceBuffer_,simIntactBuffer_,simExcessBuffer_,simGougeBuffer_;
+    QOpenGLBuffer modelBuffer_, stockFaceBuffer_, stockEdgeBuffer_,pathBuffer_,surfaceBuffer_,simIntactBuffer_,simExcessBuffer_,simGougeBuffer_,cylinderBuffer_,cutterBuffer_;
 };

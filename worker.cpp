@@ -7,6 +7,7 @@
 #include <QTextStream>
 #include <array>
 #include <future>
+#include <cstdio>
 
 static QJsonObject inspect(const QString& path) {
     std::vector<float> vertices;
@@ -34,13 +35,18 @@ static QJsonObject inspect(const QString& path) {
 int main(int argc,char** argv){
     QCoreApplication app(argc,argv);
     QTextStream input(stdin);input.setEncoding(QStringConverter::Utf8);
-    const auto request=QJsonDocument::fromJson(input.readLine(65536).toUtf8()).object();
+    const auto request=QJsonDocument::fromJson(input.readLine(1048576).toUtf8()).object();
     QJsonObject result;
     try{
         if(request.value("file").toString().isEmpty())
             result={{"ok",false},{"error",QStringLiteral("Yêu cầu kiểm tra STL không hợp lệ.")}};
         else if(request.value("operation").toString()=="inspect-stl")result=inspect(request.value("file").toString());
-        else result=runCamJob(request);
+        else result=runCamJob(request,[](int percent,const QString& stage,qint64 turn,qint64 total){
+            const auto record=QJsonDocument(QJsonObject{{"percent",percent},{"stage",stage},{"turn",turn},{"total",total}}).toJson(QJsonDocument::Compact);
+            std::fwrite(record.constData(),1,size_t(record.size()),stderr);
+            std::fputc('\n',stderr);
+            std::fflush(stderr);
+        });
     }catch(const std::exception& error){result={{"ok",false},{"error",QString::fromUtf8(error.what())}};}
     QFile output; if(!output.open(stdout,QIODevice::WriteOnly))return 2;
     output.write(QJsonDocument(result).toJson(QJsonDocument::Compact)+"\n");

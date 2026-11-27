@@ -75,7 +75,7 @@ struct WorkshopAudit {
         auto* cancel=action(workshop,"Hủy tác vụ");
         workshop.launchJob("wrap-stl",fixture);
         check(workshop.jobBusy && cancel->isEnabled() && !workshop.modeBox->isEnabled() &&
-              !workshop.tree->isEnabled(), "worker locks editing and enables Cancel before processing");
+              !workshop.tree->isEnabled() && !workshop.projectControls->isEnabled(), "worker locks editing and enables Cancel before processing");
         for(auto* control:workshop.jobControls)
             check(!control->isEnabled(), "worker suspends toolbar and menu actions");
         open->trigger();preset2->trigger();preset4->trigger();
@@ -86,7 +86,7 @@ struct WorkshopAudit {
         check(!workshop.jobBusy && !cancel->isEnabled() && workshop.modeBox->isEnabled() &&
               open->isEnabled() && preset2->isEnabled() && preset4->isEnabled(),
               "successful worker restores controls");
-        check(!workshop.surfaceOverlay.empty() && workshop.revision==rev,
+        check(!workshop.surfaceOverlay.empty() && workshop.revision==rev && workshop.progressBar->value()==100,
               "successful worker result reaches the viewport on the original revision");
 
         const auto previousSurface=workshop.surfaceOverlay;
@@ -160,6 +160,7 @@ struct WorkshopAudit {
                       field<QLabel>(dialog,"Hồ sơ đang dùng")->text().contains("cm600"),
                       "assistant opens with the toolbar mode and post");
                 axes->setCurrentIndex(0);
+                field<QComboBox>(dialog,"Chế độ phá tròn")->setCurrentIndex(0);
                 accept(dialog);
             });
             action(workshop,"Trợ lý")->trigger();
@@ -200,6 +201,31 @@ struct WorkshopAudit {
                   "one-click update action is present");
             check(action(workshop,"Nguồn thông báo Google Sheet…")->isEnabled(),
                   "update source configuration action is present");
+            auto* row=workshop.tree->topLevelItem(4)->child(0);
+            check(row->checkState(0)==Qt::Checked,"project path has direct checkbox");
+            row->setCheckState(0,Qt::Unchecked);
+            check(!workshop.flow.snapshot()["paths"].toArray()[0].toObject()["active"].toBool() &&
+                  !workshop.jobBusy,"project checkbox updates selection without calculating");
+            QTimer::singleShot(0,[&]{
+                auto* dialog=modal();
+                auto* report=field<QLabel>(dialog,"Báo cáo quy chuẩn");
+                check(report->text().contains("Nhấc"),"live assistant rule report");
+                for(auto* button:dialog->findChildren<QPushButton*>()){
+                    if(!button->text().contains("TỰ ĐỘNG TÍNH TOÀN BỘ"))continue;
+                    button->click();return;
+                }
+                check(false,"assistant explicit calculate-all button");
+            });
+            action(workshop,"Trợ lý")->trigger();
+            check(workshop.jobBusy,"explicit assistant button launches worker");
+            const auto request=QJsonDocument::fromJson(workshop.pendingJob).object();
+            const auto selected=request["workflow"].toObject()["paths"].toArray();
+            check(std::all_of(selected.begin(),selected.end(),[](const auto& p){return p.toObject()["active"].toBool();}),
+                  "calculate all includes unchecked paths for this job");
+            workshop.cancelJob->trigger();workshop.worker.waitForFinished(10000);
+            check(!workshop.jobBusy,"cancelled calculate all returns control");
+            workshop.flow.setPathActive(0,true);
+            workshop.refresh();
             checkWorkerLock(workshop,fixture);
             workshop.view->setModelTransform(persisted);
             workshop.saveWorkspace();

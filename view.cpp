@@ -15,6 +15,7 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <numbers>
 #include <memory>
 #include <new>
 
@@ -54,7 +55,7 @@ View::~View() {
 void View::cleanup() {
     if (!context()) return;
     makeCurrent();
-    modelBuffer_.destroy(); stockFaceBuffer_.destroy(); stockEdgeBuffer_.destroy();pathBuffer_.destroy();surfaceBuffer_.destroy();simIntactBuffer_.destroy();simExcessBuffer_.destroy();simGougeBuffer_.destroy();
+    modelBuffer_.destroy(); stockFaceBuffer_.destroy(); stockEdgeBuffer_.destroy();pathBuffer_.destroy();surfaceBuffer_.destroy();simIntactBuffer_.destroy();simExcessBuffer_.destroy();simGougeBuffer_.destroy();cylinderBuffer_.destroy();cutterBuffer_.destroy();cutterDirty_=true;
     delete program_; program_=nullptr;
     ready_=false;
     modelDirty_=stockDirty_=overlayDirty_=true;
@@ -158,7 +159,23 @@ void View::initializeGL() {
     if (!program_->addShaderFromSourceCode(QOpenGLShader::Vertex,vs) ||
         !program_->addShaderFromSourceCode(QOpenGLShader::Fragment,fs)) return;
     program_->bindAttributeLocation("pos",0);
-    ready_=program_->link() && modelBuffer_.create() && stockFaceBuffer_.create() && stockEdgeBuffer_.create() && pathBuffer_.create() && surfaceBuffer_.create() && simIntactBuffer_.create() && simExcessBuffer_.create() && simGougeBuffer_.create();
+    ready_=program_->link() && modelBuffer_.create() && stockFaceBuffer_.create() && stockEdgeBuffer_.create() && pathBuffer_.create() && surfaceBuffer_.create() && simIntactBuffer_.create() && simExcessBuffer_.create() && simGougeBuffer_.create() && cylinderBuffer_.create() && cutterBuffer_.create();
+    if(ready_){
+        Triangles cylinder;
+        for(int i=0;i<24;++i){
+            auto rim=[](int sector){
+                const auto a=qDegreesToRadians(15.f*sector);
+                return QVector3D(std::cos(a),std::sin(a),0);
+            };
+            const auto a=rim(i),b=rim(i+1);
+            const QVector3D rise(0,0,1);
+            triangle(cylinder,a,b,b+rise);triangle(cylinder,a,b+rise,a+rise);
+            triangle(cylinder,{},b,a);triangle(cylinder,rise,a+rise,b+rise);
+        }
+        cylinderBuffer_.bind();
+        cylinderBuffer_.allocate(cylinder.data(),int(cylinder.size()*sizeof(float)));
+        cylinderBuffer_.release();
+    }
 }
 void View::draw(QOpenGLBuffer &buf,int count,unsigned mode,const QMatrix4x4 &world,const QVector3D &color,float alpha,bool shaded) {
     if (!count || !buf.bind()) return;
@@ -189,6 +206,55 @@ void View::setSimStock(std::vector<float> intact,std::vector<float> excess,std::
     simIntact_=voxels(intact);simExcess_=voxels(excess);simGouge_=voxels(gouge);
     overlayDirty_=true;update();
 }
+void View::setPlayback(QVector3D tip,double a,double b,bool axisY,QVector3D pivot,double diameter,double overhang,double holder,double ball,double halfAngle,double flute){
+    playback_=true;
+    partRotation_.setToIdentity();
+    partRotation_.translate(pivot);
+    partRotation_.rotate(float(std::remainder(a,360.)),axisY?QVector3D(0,1,0):QVector3D(1,0,0));
+    partRotation_.translate(-pivot);
+    toolPose_.setToIdentity();
+    toolPose_.translate(tip);
+    toolPose_.rotate(float(b),axisY?QVector3D(-1,0,0):QVector3D(0,1,0));
+    const std::array profile{diameter,overhang,holder,ball,halfAngle,flute};
+    if(cutterProfile_!=profile){
+        cutterProfile_=profile;
+        cutterDirty_=true;
+        cutterMesh_.clear();
+        std::vector<std::pair<double,double>> rings;
+        const double body=diameter/2;
+        if(ball>0){
+            const double lean=qDegreesToRadians(halfAngle);
+            for(int i=0;i<=8;++i){
+                const double polar=(std::numbers::pi/2-lean)*i/8;
+                rings.emplace_back(ball*(1-std::cos(polar)),ball*std::sin(polar));
+            }
+            const auto [height,radius]=rings.back();
+            if(halfAngle>0){
+                const auto top=std::clamp(height+(body-radius)/std::tan(lean),height,std::max(height,flute));
+                rings.emplace_back(top,std::min(body,radius+(top-height)*std::tan(lean)));
+            }
+        }else{
+            rings.emplace_back(0,0);
+            rings.emplace_back(0,body);
+        }
+        rings.emplace_back(std::max(rings.back().first,flute),rings.back().second);
+        rings.emplace_back(rings.back().first,body);
+        rings.emplace_back(overhang,body);
+        rings.emplace_back(overhang,0);
+        for(size_t r=1;r<rings.size();++r){
+            auto vertex=[&](size_t ring,int side){
+                const auto [z,radius]=rings[ring];
+                const auto angle=qDegreesToRadians(15.*side);
+                return QVector3D(float(radius*std::cos(angle)),float(radius*std::sin(angle)),float(z));
+            };
+            for(int i=0;i<24;++i){
+                const auto a=vertex(r-1,i),b=vertex(r-1,i+1),c=vertex(r,i+1),d=vertex(r,i);
+                triangle(cutterMesh_,a,b,c);triangle(cutterMesh_,a,c,d);
+            }
+        }
+    }
+    update();
+}
 void View::paintGL() {
     glClearColor(.075f,.095f,.12f,1); glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     if (!ready_) { QPainter p(this); p.setPen(Qt::white); p.drawText(rect(),Qt::AlignCenter,QStringLiteral("Khung nhìn cần OpenGL 2.1.")); return; }
@@ -197,6 +263,7 @@ void View::paintGL() {
     if (stockDirty_) { upload(stockFaceBuffer_,stockFaces_); upload(stockEdgeBuffer_,stockEdges_); stockDirty_=false; }
     if(overlayDirty_){upload(pathBuffer_,pathPoints_);upload(surfaceBuffer_,surfaceFaces_);
         upload(simIntactBuffer_,simIntact_);upload(simExcessBuffer_,simExcess_);upload(simGougeBuffer_,simGouge_);overlayDirty_=false;}
+    if(cutterDirty_){upload(cutterBuffer_,cutterMesh_);cutterDirty_=false;}
     const auto direction=eyeDirection(yaw_,elevation_);
     const float sceneDepth=std::max({span_,(stockLo_-target_).length(),(stockHi_-target_).length(),
         (modelLo_-target_).length(),(modelHi_-target_).length(),1.0f})*2.0f;
@@ -209,22 +276,33 @@ void View::paintGL() {
     projectionView_=proj*view;
     glEnable(GL_DEPTH_TEST); glDepthMask(GL_TRUE); glDisable(GL_CULL_FACE);
     program_->bind();
+    const QMatrix4x4 part=playback_?partRotation_:QMatrix4x4{};
     const bool sim=!simIntact_.empty()||!simExcess_.empty()||!simGouge_.empty();
-    if (modelVisible_) draw(modelBuffer_,int(positions_.size()/3),GL_TRIANGLES,modelMatrix_,{.85f,.72f,.54f},1,true);
+    if (modelVisible_) draw(modelBuffer_,int(positions_.size()/3),GL_TRIANGLES,part*modelMatrix_,{.85f,.72f,.54f},1,true);
     if (stockVisible_&&!sim) {
         glEnable(GL_BLEND); glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA); glDepthMask(GL_FALSE);
-        draw(stockFaceBuffer_,int(stockFaces_.size()/3),GL_TRIANGLES,QMatrix4x4(),{.30f,.67f,.80f},.12f,false);
-        draw(stockEdgeBuffer_,int(stockEdges_.size()/3),GL_LINES,QMatrix4x4(),{.48f,.83f,.90f},.85f,false);
+        draw(stockFaceBuffer_,int(stockFaces_.size()/3),GL_TRIANGLES,part,{.30f,.67f,.80f},.12f,false);
+        draw(stockEdgeBuffer_,int(stockEdges_.size()/3),GL_LINES,part,{.48f,.83f,.90f},.85f,false);
         glDepthMask(GL_TRUE); glDisable(GL_BLEND);
     }
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
-    draw(surfaceBuffer_,int(surfaceFaces_.size()/3),GL_TRIANGLES,QMatrix4x4(),{.21f,.84f,.64f},.30f,true);
+    draw(surfaceBuffer_,int(surfaceFaces_.size()/3),GL_TRIANGLES,part,{.21f,.84f,.64f},.30f,true);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
     if(sim&&stockVisible_){
-        draw(simIntactBuffer_,int(simIntact_.size()/3),GL_TRIANGLES,QMatrix4x4(),{.82f,.65f,.45f},1,true);
-        draw(simExcessBuffer_,int(simExcess_.size()/3),GL_TRIANGLES,QMatrix4x4(),{1.f,.65f,.18f},1,true);
-        draw(simGougeBuffer_,int(simGouge_.size()/3),GL_TRIANGLES,QMatrix4x4(),{1.f,.18f,.24f},1,true);
-    }else if(!sim)draw(pathBuffer_,int(pathPoints_.size()/3),GL_LINES,QMatrix4x4(),{1.f,.77f,.16f},1,false);
+        draw(simIntactBuffer_,int(simIntact_.size()/3),GL_TRIANGLES,part,{.82f,.65f,.45f},1,true);
+        draw(simExcessBuffer_,int(simExcess_.size()/3),GL_TRIANGLES,part,{1.f,.65f,.18f},1,true);
+        draw(simGougeBuffer_,int(simGouge_.size()/3),GL_TRIANGLES,part,{1.f,.18f,.24f},1,true);
+    }else if(!sim)draw(pathBuffer_,int(pathPoints_.size()/3),GL_LINES,part,{1.f,.77f,.16f},1,false);
+    if(playback_){
+        auto drawTool=[&](float start,float diameter,float length,QVector3D color){
+            auto pose=toolPose_;
+            pose.translate(0,0,start);
+            pose.scale(diameter*.5f,diameter*.5f,length);
+            draw(cylinderBuffer_,24*12,GL_TRIANGLES,pose,color,1,true);
+        };
+        draw(cutterBuffer_,int(cutterMesh_.size()/3),GL_TRIANGLES,toolPose_,{.76f,.86f,.95f},1,true);
+        drawTool(float(cutterProfile_[1]),float(cutterProfile_[2]),40,{.35f,.55f,.74f});
+    }
     program_->release();
 }
 void View::mousePressEvent(QMouseEvent *e) { lastMouse_=e->position().toPoint(); e->accept(); }

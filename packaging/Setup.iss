@@ -1,10 +1,11 @@
 #ifndef BuildVersion
-  #define BuildVersion "1.0.1"
+  #define BuildVersion "1.1.0"
 #endif
 [Setup]
 AppId=ArtisanAxis.XuanDieuCNC
 AppName=ArtisanAxis CAM Pro
 AppPublisher=Xuan Dieu CNC
+SetupIconFile=artisanaxis.ico
 VersionInfoProductName=ArtisanAxis CAM Pro
 AppVersion={#BuildVersion}
 VersionInfoVersion={#BuildVersion}
@@ -24,8 +25,8 @@ UninstallDisplayIcon={app}\ArtisanAxis.exe
 Source: "{#StageDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "vcredist\*"
 Source: "{#StageDir}\vcredist\vc_redist.x64.exe"; Flags: dontcopy
 [Icons]
-Name: "{autodesktop}\ArtisanAxis CAM Pro"; Filename: "{app}\ArtisanAxis.exe"
-Name: "{group}\ArtisanAxis CAM Pro"; Filename: "{app}\ArtisanAxis.exe"
+Name: "{autodesktop}\ArtisanAxis CAM Pro"; Filename: "{app}\ArtisanAxis.exe"; IconFilename: "{app}\ArtisanAxis.exe"
+Name: "{group}\ArtisanAxis CAM Pro"; Filename: "{app}\ArtisanAxis.exe"; IconFilename: "{app}\ArtisanAxis.exe"
 
 [Code]
 function PrepareToInstall(var NeedsRestart: Boolean): String;

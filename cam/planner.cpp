@@ -2,6 +2,8 @@
 #include <algorithm>
 #include <cmath>
 #include <future>
+#include <thread>
+#include <atomic>
 #include <numbers>
 #include <stdexcept>
 
@@ -109,18 +111,28 @@ DistanceGrid DistanceGrid::measure(const Tree& model,Bounds b,double pitch){
         out.size[a]=int(steps)+1;n*=size_t(steps+1);
     }
     out.samples.resize(n);
-    auto slab=[&](int z0,int z1){
-        for(int z=z0;z<z1;++z)for(int y=0;y<out.size[1];++y)for(int x=0;x<out.size[0];++x){
-            V p=b.lo+V{x*pitch,y*pitch,z*pitch};
-            out.samples[(size_t(z)*out.size[1]+y)*out.size[0]+x]=float(model.distance(p)*(model.insideClosedMesh(p)?-1:1));
+    const size_t workers=std::min<size_t>(std::max(1u,std::thread::hardware_concurrency()),(n+255)/256);
+    std::atomic_size_t next{0};
+    auto run=[&]{
+        constexpr size_t block=64;
+        for(size_t begin;(begin=next.fetch_add(block,std::memory_order_relaxed))<n;){
+            for(size_t index=begin;index<std::min(begin+block,n);++index){
+                auto layer=index/out.size[0];
+                V point=b.lo+V{(index%out.size[0])*pitch,(layer%out.size[1])*pitch,(layer/out.size[1])*pitch};
+                out.samples[index]=float(model.distance(point)*(model.insideClosedMesh(point)?-1:1));
+            }
         }
     };
-    auto first=std::async(std::launch::async,slab,0,out.size[2]/2);slab(out.size[2]/2,out.size[2]);first.get();
+    {
+        std::vector<std::jthread> jobs;
+        for(size_t i=1;i<workers;++i)jobs.emplace_back(run);
+        run();
+    }
     return out;
 }
 
 Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vector<Cutter>& tools,
-              const std::vector<PathSpec>& paths,bool twoFace,V pivot,double safe){
+              const std::vector<PathSpec>& paths,bool twoFace,V pivot,double safe,const RasterProgress& progress){
     Plan plan{{},0,safe};
     const double transverse=stock.axisY?pivot.x:pivot.y;
     if(std::abs(transverse*1000-std::round(transverse*1000))>1e-7)
@@ -146,7 +158,7 @@ Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vec
         // Model both end clamps as reserved axial stock zones. The full
         // assembly footprint stays outside these zones.
         double keep=2.+tool.holderRadius;
-        localLow=initial.lo.x+keep;localHigh=initial.hi.x-keep;
+        localLow=std::max(initial.lo.x+keep,p.clipMin);localHigh=std::min(initial.hi.x-keep,p.clipMax);
         if(localHigh<=localLow)throw std::invalid_argument("Không đủ chiều dài giữa hai vùng giữ phôi.");
         const double requestedAngles=std::ceil(2*std::numbers::pi*std::max(1.,safe-50)/p.step);
         if(p.angle<0&&requestedAngles>4000)throw std::runtime_error("Bước dịch yêu cầu hơn 4.000 góc phân độ. Chia vùng hoặc chỉnh bước.");
@@ -158,14 +170,16 @@ Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vec
             model.setFrame(angle,stock.axisY,pivot);
             const double tipRadius=tool.ball>0?tool.ball:tool.diameter*.5;
             const auto spans=tool.spans();
-            const int lengthSteps=std::max(1,int(std::ceil((localHigh-localLow)/p.step)));
+            const int lengthSteps=std::max(1,int(std::ceil((localHigh-localLow)/(p.pointSpacing>0?p.pointSpacing:p.step))));
             const int widthSteps=p.angle<0?0:std::max(1,int(std::ceil((box.hi.y-box.lo.y)/p.step)));
-            const double bottom=std::max(twoFace?-1.:1.,box.hi.z-tool.overhang+1.);
+            const double bottom=std::max({twoFace?-1.:1.,box.hi.z-tool.overhang+1.,p.minZ});
             if(size_t(lengthSteps+1)*size_t(widthSteps+1)>1'500'000)throw std::runtime_error("Bước dịch tạo quá nhiều điểm cho một mặt.");
+            if(progress)progress(pass,0,size_t(widthSteps)+1);
             for(int j=0;j<=widthSteps;++j){
+                if(progress&&(j%4==0||j==widthSteps))progress(pass,size_t(j)+1,size_t(widthSteps)+1);
                 double y=p.angle<0?0.:box.lo.y+(box.hi.y-box.lo.y)*j/widthSteps;
                 for(int i=0;i<=lengthSteps;++i){
-                    double x=localLow+(localHigh-localLow)*(j%2?lengthSteps-i:i)/lengthSteps;
+                    double x=localLow+(localHigh-localLow)*((bool(j%2)!=p.reverse)?lengthSteps-i:i)/lengthSteps;
                     auto quantized=world({x,y,0},0,stock.axisY,pivot);
                     quantized.x=roundMm(quantized.x);
                     quantized.y=roundMm(quantized.y);
@@ -178,7 +192,7 @@ Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vec
                         model.drop(x,queryY,tipRadius+p.allowance,tool.ball>0)+p.allowance:drop;
                     double z=std::max(allowed,drop)+.002;
                     if(p.angle>=0)z=std::max(z,bottom);
-                    if(!std::isfinite(z)||z>=box.hi.z-.001)continue;
+                    if(!std::isfinite(z)||z>p.maxZ||z>=box.hi.z-.001)continue;
                     V point{x,queryY,z};
                     auto clear=[&](V q){
                         if(tool.ball>0&&tool.halfAngle>0){
@@ -198,11 +212,10 @@ Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vec
                         return model.spanClear(q,spans[2])&&model.spanClear(q,spans[3])&&
                                residual.clear(q,angle,pivot,spans[2])&&residual.clear(q,angle,pivot,spans[3]);
                     };
-                    double level=std::max(z,std::min(box.hi.z,residual.top(point,angle,pivot,tool.diameter*.5)));
+                    double level=std::max(z,std::min(std::min(p.maxZ,box.hi.z),residual.top(point,angle,pivot,tool.diameter*.5)));
                     do {
-                        level=std::max(z,level-std::min(2.,tool.flute*.3));point.z=level;
+                        level=std::max(z,level-std::min(p.stepDown>0?p.stepDown:2.,tool.flute*.3));point.z=level;
                         if(!clear(point)){++plan.rejected;break;}
-                        if(plan.cuts.size()>=350000)throw std::runtime_error("Vượt 350.000 điểm NC thử; hãy chia vùng hoặc tăng bước.");
                         bool link=false;
                         if(tool.ball==0&&!plan.cuts.empty()){
                             const auto& prev=plan.cuts.back();

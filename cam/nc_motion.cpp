@@ -1,11 +1,14 @@
 #include "motion.h"
 #include <algorithm>
 #include <cmath>
+#include <charconv>
 #include <iomanip>
 #include <locale>
 #include <numbers>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
+#include <exception>
 
 namespace cam {
 namespace {
@@ -43,7 +46,8 @@ double controllerSpeed(Pose a,Pose b,const Machine& m){
     if(tcp(m)){
         auto x=command(a,m),y=command(b,m);
         const double w=radians(a.a-b.a);
-        speed+=2*w*norm(y-x)+w*w*std::max(norm(x-m.pivot),norm(y-m.pivot));
+        speed+=2*w*norm(y-x)+w*w*std::max(std::hypot(face(x,0,m.axisY,m.pivot).y,(x-m.pivot).z),
+                                   std::hypot(face(y,0,m.axisY,m.pivot).y,(y-m.pivot).z));
     }
     if(m.dialect==Machine::Direct){
         const double w=radians(a.b-b.b);
@@ -68,7 +72,7 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
     row(home,"G00");out<<'\n';
     if(m.dialect==Machine::Tcp434)out<<"G43.4 H1\n";
     if(m.dialect==Machine::Traori)out<<"TRAORI\n";
-    int tool=-1,pass=-1;
+    int tool=-1,pass=-1,rpm=0;
     Pose previous=home;
     for(const auto& move:program.moves){
         if(move.pass!=pass){pass=move.pass;out<<"(PASS "<<pass<<")\n";}
@@ -77,8 +81,10 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
             const bool manual=post=="jd45"||post=="jd50"||post=="richauto"||post=="weihong4";
             tool=move.tool;
             if(manual)out<<"(MANUAL TOOL "<<tool+1<<")\n";
-            out<<"T"<<tool+1<<(manual?"\nM0\n":" M6\n")<<"S16000 M3\n";
+            out<<"T"<<tool+1<<(manual?"\nM0\n":" M6\n");
+            rpm=0;
         }
+        if(move.rpm!=rpm){rpm=move.rpm;out<<"S"<<rpm<<" M3\n";}
         auto p=move.pose;
         if(move.kind==MotionKind::Rapid&&p.tip.z>=m.safe)p.tip.z+=.20;
         if(move.kind==MotionKind::Rapid&&previous.tip.z>=m.safe&&p.tip.z>=m.safe){
@@ -90,27 +96,74 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
             }
         }
         row(p,move.kind==MotionKind::Rapid?"G00":"G01");
-        if(move.kind!=MotionKind::Rapid)out<<(move.kind==MotionKind::Approach?" F250":" F600");
+        if(move.kind!=MotionKind::Rapid)out<<" F"<<(move.kind==MotionKind::Approach?std::min(250.,move.feed):move.feed);
         out<<'\n';previous=p;
     }
     if(m.dialect==Machine::Tcp434)out<<"G49\n";
     if(m.dialect==Machine::Traori)out<<"TRAFOOF\n";
-    out<<"M5\nM30\n";return out.str();
+    out<<"M5\nM30\n";return std::move(out).str();
 }
 
-Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::vector<Cutter>& tools,MotionChecks& checks){
-    Verified output; std::istringstream lines{std::string(contents)}; std::string line;
+Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::vector<Cutter>& tools,MotionChecks& checks,const NcProgress& progress){
+    Verified output;
     unsigned number=0;int tool=-1,pass=0;
     bool compensation=false,spindle=false,ended=false,units=false,absolute=false,feedMode=false,work=false;
     std::optional<Pose> previous;V previousCommand;
-    auto problem=[&](std::string text){output.errors.push_back({number,std::move(text)});};
-    while(std::getline(lines,line)){
+    const auto bytes=contents.size();
+    const auto concurrency=std::max(1u,std::thread::hardware_concurrency());
+    constexpr size_t batchSize=1024;
+    struct Segment {
+        Pose from,to;
+        V commandFrom,commandTo;
+        double speed,minimumZ;
+        int tool;
+        unsigned line;
+    };
+    std::vector<Segment> queue;
+    queue.reserve(batchSize);
+    auto addIssue=[&](unsigned line,std::string text){
+        if(output.errors.size()<1000)output.errors.push_back({line,std::move(text)});
+    };
+    auto problem=[&](std::string text){addIssue(number,std::move(text));};
+    auto verifyQueue=[&]{
+        if(queue.empty())return;
+        const auto threads=std::min<size_t>(concurrency,(queue.size()+63)/64);
+        std::vector<unsigned char> failures(queue.size(),0);
+        std::vector<std::exception_ptr> errors(threads);
+        auto compute=[&](size_t id){
+            try{
+                auto local=checks;
+                for(size_t i=id;i<queue.size();i+=threads){
+                    const auto& step=queue[i];
+                    const auto actual=[&](double ratio){
+                        const auto rotary=interpolate(step.from,step.to,ratio);
+                        return decode(step.commandFrom+(step.commandTo-step.commandFrom)*ratio,rotary.a,rotary.b,m);
+                    };
+                    failures[i]=!local.sweep(step.from,step.to,tools[size_t(step.tool)],actual,step.speed,step.minimumZ,TipCheck::NcRounded);
+                }
+            }catch(...){errors[id]=std::current_exception();}
+        };
+        {
+            std::vector<std::jthread> jobs;
+            for(size_t i=1;i<threads;++i)jobs.emplace_back(compute,i);
+            compute(0);
+        }
+        for(const auto& error:errors)if(error)std::rethrow_exception(error);
+        for(size_t i=0;i<queue.size();++i)if(failures[i])
+            addIssue(queue[i].line,"Swept assembly collision or unresolved travel bound");
+        queue.clear();
+        if(progress)progress(bytes-contents.size(),bytes);
+    };
+    while(!contents.empty()){
+        const auto end=contents.find('\n');
+        auto line=contents.substr(0,end);
+        contents.remove_prefix(end==std::string_view::npos?contents.size():end+1);
         ++number;
-        if(!line.empty()&&line.back()=='\r')line.pop_back();
+        if(!line.empty()&&line.back()=='\r')line.remove_suffix(1);
         if(line.empty())continue;
         if(line.front()=='('&&line.back()==')'){
             if(line.starts_with("(PASS ")){
-                try{size_t n=0;auto value=line.substr(6,line.size()-7);pass=std::stoi(value,&n);
+                try{size_t n=0;auto value=line.substr(6,line.size()-7);pass=std::stoi(std::string(value),&n);
                     if(n!=value.size()||pass<0||pass>1000)problem("Invalid pass number");
                 }catch(...){problem("Invalid pass number");}
             }
@@ -141,12 +194,20 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
             if(spindle||!previous||previous->tip.z<m.safe-.0001||previous->b!=0)problem("Unsafe tool stop");
             continue;
         }
-        if(line=="S16000 M3"){spindle=true;continue;}
+        if(line.front()=='S'&&line.ends_with(" M3")){
+            const auto number=line.substr(1,line.size()-4);
+            int rpm=0;
+            const auto parsed=std::from_chars(number.data(),number.data()+number.size(),rpm);
+            if(parsed.ec!=std::errc{}||parsed.ptr!=number.data()+number.size()||rpm<=0||rpm>60000)
+                problem("Invalid spindle speed");
+            else spindle=true;
+            continue;
+        }
         if(line.front()=='T'){
             auto i=line.find(' ');
             try{
                 auto s=line.substr(1,i==std::string::npos?line.size()-1:i-1);size_t n=0;
-                int t=std::stoi(s,&n)-1;
+                int t=std::stoi(std::string(s),&n)-1;
                 if(n!=s.size()||t<0||t>=int(tools.size())||(i!=std::string::npos&&line.substr(i)!=" M6"))
                     problem("Unsupported tool block");
                 else if(spindle||!previous||previous->tip.z<m.safe-.0001||previous->b!=0)problem("Tool change below safe plane");
@@ -154,18 +215,22 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
             }catch(...){problem("Invalid tool number");}
             continue;
         }
-        std::istringstream row(line);row.imbue(std::locale::classic());
-        std::string opcode;row>>opcode;
+        const auto opcode=line.substr(0,line.find(' '));
         const bool rapid=opcode=="G00";
         if(!rapid&&opcode!="G01"){problem("Unsupported NC block");continue;}
-        std::array<std::optional<double>,6> words;std::string word;
+        auto fields=line.substr(opcode.size());
+        std::array<std::optional<double>,6> words;
         bool valid=true;
-        while(row>>word){
-            size_t index=std::string_view("XYZABF").find(word[0]);
+        while(!fields.empty()){
+            if(fields.front()==' '||fields.front()=='\t'){fields.remove_prefix(1);continue;}
+            const auto word=fields.substr(0,fields.find_first_of(" \t"));
+            fields.remove_prefix(word.size());
+            const auto index=std::string_view("XYZABF").find(word.front());
             if(index==std::string_view::npos||words[index]||word.size()==1){valid=false;break;}
-            std::istringstream value(word.substr(1));value.imbue(std::locale::classic());double v;
-            if(!(value>>v)||value.peek()!=EOF||!std::isfinite(v)){valid=false;break;}
-            words[index]=v;
+            double value;
+            const auto parsed=std::from_chars(word.data()+1,word.data()+word.size(),value);
+            if(parsed.ec!=std::errc{}||parsed.ptr!=word.data()+word.size()||!std::isfinite(value)){valid=false;break;}
+            words[index]=value;
         }
         if(!valid||!words[0]||!words[1]||!words[2]||!words[3]||(words[4].has_value()!=(m.axes==5))||
            (rapid&&words[5])||(!rapid&&(!words[5]||*words[5]<=0))){
@@ -193,14 +258,19 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
             };
             if(rapid&&rot&&(tcp(m)||m.dialect==Machine::Direct)&&
                 actual(.5).tip.z<m.safe-.0001)problem("Interpolated rapid drops below safe plane");
-            if(tool>=0&&!checks.sweep(*previous,pose,tools[size_t(tool)],actual,speed,rapid&&rot?m.safe-.0001:-std::numeric_limits<double>::infinity(),TipCheck::NcRounded))
-                problem("Swept assembly collision or unresolved travel bound");
+            if(tool>=0){
+                queue.push_back({*previous,pose,previousCommand,xyz,speed,
+                    rapid&&rot?m.safe-.0001:-std::numeric_limits<double>::infinity(),tool,number});
+                if(queue.size()==batchSize)verifyQueue();
+            }
         }
         const bool plunge=!rapid&&previous&&previous->tip.z>=m.safe-.0001;
-        output.motions.push_back({pose,tool,pass,rapid?MotionKind::Rapid:plunge?MotionKind::Approach:MotionKind::Cut,number});
+        output.motions.push_back({pose,tool,pass,rapid?MotionKind::Rapid:plunge?MotionKind::Approach:MotionKind::Cut,number,words[5].value_or(3000)});
         previous=pose;previousCommand=xyz;
     }
+    verifyQueue();
     if(!ended)problem("Missing M30");
+    std::stable_sort(output.errors.begin(),output.errors.end(),[](const Diagnostic& a,const Diagnostic& b){return a.line<b.line;});
     return output;
 }
 }

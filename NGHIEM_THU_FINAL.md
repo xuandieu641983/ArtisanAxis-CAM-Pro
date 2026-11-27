@@ -1,4 +1,25 @@
-# Nghiệm thu ArtisanAxis CAM Pro v1.0.1
+# Nghiệm thu ArtisanAxis CAM Pro v1.1.0
+
+Ngày 27/11/2026 · Xuân Diệu CNC
+
+## Kết quả đã chạy
+
+| Hạng mục | Kết quả |
+|---|---|
+| CTest Release Linux x64, GCC 14.2, Qt 6.8.2 | 9/9 nhóm đạt trong 46,67 giây |
+| CTest `LongSpiral250mm` | Mẫu trụ dài 250 mm có 4.896 tam giác. Bước dọc trục 0,22 mm. Đạt 429.220 lớp, 1.109,09 vòng xoay, 442.041 điểm cắt. Không nhấc trung gian, không mất lớp. |
+| CAMWorker và tệp NC trên mẫu 250 mm | Worker đọc STL nhị phân, lập đường, kiểm chứng và ghi tệp NC 21,13 MB. Đạt 442.060 khối NC, 0 lỗi kiểm chứng, 0 lớp không tới, 0 lần nhấc trung gian. Có 1 trạng thái mô phỏng phôi. |
+| Thử tải `LongSpiralCheck --stress` | 5.204.291 lớp, 5.204.290 điểm cắt, 1.118 vòng trong 194,30 giây. Mẫu trụ rất nhỏ tổng hợp có bước dọc trục 0,22 mm. Ca này đo lõi lập đường xoắn ốc. |
+| Cấu hình và giao diện | WorkshopAudit thử đồng bộ 4X/5X, kế hoạch và post, tích đường, lệnh AI tính toàn bộ, khóa chỉnh sửa, hủy và nhận tiến độ 100%. DialogAudit thử thông số đường dao nâng cao và lưu cấu hình. WorkerSimultaneousFile thử ghi, đọc lại NC, tiến độ, playback, tốc độ F và RPM. |
+| OpenNURBS trên Linux | Biên dịch và đọc được tệp .3dm mẫu, nhận 1 mặt, 2.401 mẫu pháp tuyến và 13.824 đỉnh hiển thị. |
+
+## Phạm vi còn cần xác nhận
+
+- Tệp đính kèm chứa HTML v6.2. Chưa có `di lac 250.stl` với 1.056.883 tam giác. Số đo trên mẫu trụ kiểm tra hồi quy giới hạn cũ và khả năng xuất NC, chưa đo thời gian hoặc độ phủ trên tượng của xưởng.
+- Các ca giao diện dùng Qt offscreen. Cần xác nhận trực quan OpenGL, biểu tượng Desktop, Setup.exe và đọc .3dm với workflow Windows x64.
+- Cửa sổ nối lưu tối đa 4.096 lớp ứng viên và tiếp tục từ tư thế đã chốt. Tìm đường theo cửa sổ có thể chọn tuyến khác khi rời một vùng khó. Bộ kiểm chứng vẫn kiểm tra đường đã xuất theo số NC làm tròn. Bộ nhớ dùng cho các chuyển động đã chốt và kiểm chứng tăng theo kích thước chương trình.
+
+## Biên bản từ v1.0.1 và v1.0.0
 
 Ngày 27/11/2026 · Xuân Diệu CNC
 

@@ -5,6 +5,8 @@
 #include <QScopeGuard>
 #include <QJsonDocument>
 #include <cmath>
+#include <algorithm>
+#include <utility>
 #include <QStandardPaths>
 #include <QRegularExpression>
 #include <QDir>
@@ -18,9 +20,10 @@
 #include "profiles.h"
 #include "workflow.h"
 #include "stock.h"
+#include "theme.h"
 
 #ifndef ARTISAN_VERSION
-#define ARTISAN_VERSION "1.0.1"
+#define ARTISAN_VERSION "1.1.0"
 #endif
 
 class Workshop final : public QMainWindow {
@@ -32,6 +35,23 @@ class Workshop final : public QMainWindow {
     Workflow flow;
     QComboBox* modeBox=new QComboBox;
     QAction* cancelJob=nullptr;
+    QProgressBar* progressBar=new QProgressBar;
+    QLabel* progressText=new QLabel("Sẵn sàng");
+    QElapsedTimer jobClock;
+    QTimer progressTimer,playTimer;
+    QByteArray progressPending;
+    QString progressStage;
+    QWidget* projectControls=nullptr;
+    QSlider* scrub=new QSlider(Qt::Horizontal);
+    QPushButton* playbackButton=new QPushButton("▶ Mô phỏng");
+    QComboBox* playbackRate=new QComboBox;
+    QLabel* timing=new QLabel("Chưa tính");
+    QString ncPreview,verifiedFile,jobNc,exportTarget,jobInput;
+    QTemporaryDir spool;
+    QSet<int> calculatedPaths,jobPaths,lastNcPaths;
+    QJsonArray playback;
+    double playhead=0;
+    bool stockAuto=true;
     QSet<QAction*> jobControls;
     QList<QAction*> suspendedControls;
     Stock stock;
@@ -61,7 +81,7 @@ class Workshop final : public QMainWindow {
         const auto path=workspacePath();QDir().mkpath(QFileInfo(path).absolutePath());
         QSaveFile out(path);
         const auto data=QJsonDocument(QJsonObject{{"version",1},{"file",modelFile},{"guideFile",guideFile},
-            {"transform",modelTransform()},{"stock",stockJson()},{"workflow",flow.snapshot()}}).toJson(QJsonDocument::Compact);
+            {"transform",modelTransform()},{"stockAuto",stockAuto},{"stock",stockJson()},{"workflow",flow.snapshot()}}).toJson(QJsonDocument::Compact);
         if(!out.open(QIODevice::WriteOnly)||out.write(data)!=data.size()||!out.commit())
             qWarning()<<"Failed to save workspace"<<out.errorString();
     }
@@ -81,6 +101,7 @@ class Workshop final : public QMainWindow {
             valid=std::abs(restored.min[i])<=1e6&&std::abs(restored.max[i])<=1e6&&restored.min[i]<restored.max[i];
         }
         if(valid)stock=restored;
+        stockAuto=values.value("stockAuto").toBool(false);
         syncStock();refresh();
         const auto path=values.value("file").toString();
         const auto matrix=values.value("transform").toArray();
@@ -100,8 +121,12 @@ class Workshop final : public QMainWindow {
         });
     }
     void invalidateOutput(){
-        ++revision;nc.clear();cutOverlay.clear();surfaceOverlay.clear();
-        view->setOverlay({},{});view->setSimStock({},{},{});stages={};diagnostics={};lifts={};stagesBox->clear();refresh();saveWorkspace();
+        ++revision;nc.clear();
+        if(!verifiedFile.isEmpty())QFile::remove(std::exchange(verifiedFile,{}));
+        ncPreview.clear();calculatedPaths.clear();lastNcPaths.clear();playback={};playhead=0;
+        stopPlayback();scrub->setValue(0);updatePlayback();
+        cutOverlay.clear();
+        view->setOverlay({},surfaceOverlay);view->setSimStock({},{},{});stages={};diagnostics={};lifts={};stagesBox->clear();refresh();saveWorkspace();
     }
     static std::vector<float> unpack(const QJsonValue& values){
         auto a=values.toArray();
@@ -128,6 +153,7 @@ class Workshop final : public QMainWindow {
             suspendedControls.clear();
         }
         tree->setEnabled(!busy);
+        if(projectControls)projectControls->setEnabled(!busy);
         cancelJob->setEnabled(busy);
         keepAwake(busy);
     }
@@ -150,14 +176,77 @@ class Workshop final : public QMainWindow {
         const auto extent=[&s](int i){return s.max[i]-s.min[i]+2*s.expansion;};
         const double r=radius(s);
         summary->setText(QString("Phôi %1 × %2 × %3 mm    |    R góc %4 mm    |    Nhấc ≥ %5 mm")
-            .arg(extent(0),0,'f',4).arg(extent(1),0,'f',4).arg(extent(2),0,'f',4).arg(r,0,'f',3).arg(r+50,0,'f',3));
+            .arg(extent(0),0,'f',4).arg(extent(1),0,'f',4).arg(extent(2),0,'f',4).arg(r,0,'f',3).arg(r+flow.safeClearance(),0,'f',3));
     }
     void syncStock(){
         auto extent=[&](int i){return stock.max[i]-stock.min[i]+2*stock.expansion;};
-        double r=radius(stock);flow.setStock(extent(0),extent(1),extent(2),r,r+50);drawStock(stock);
+        double r=radius(stock);flow.setStock(extent(0),extent(1),extent(2),r,r+flow.safeClearance());drawStock(stock);
     }
     void syncMachine(){flow.setMachine(machine.axisCount(),[this](int axes){return machine.postForAxes(axes);});syncStock();}
+    bool fitStock(Stock& target)const{
+        QVector3D lo,hi;
+        if(!view->modelBounds(lo,hi))return false;
+        for(int i=0;i<3;++i){
+            target.min[i]=lo[i];target.max[i]=std::max(hi[i],lo[i]+.0001f);
+        }
+        target.shape="box";
+        return true;
+    }
+    void modelChanged(){
+        if(stockAuto&&fitStock(stock))syncStock();
+        surfaceOverlay.clear();guideFile.clear();
+        changed();
+    }
     void changed(){flow.invalidateAll();invalidateOutput();}
+    void stopPlayback(){playTimer.stop();playbackButton->setText("▶ Mô phỏng");}
+    void updatePlayback(){
+        const bool ready=playback.size()>1;
+        playbackButton->setEnabled(ready);scrub->setEnabled(ready);playbackRate->setEnabled(ready);
+        if(!ready){view->clearPlayback();timing->setText("Chưa tính");return;}
+        const auto last=playback.last().toArray();
+        const double total=last[0].toDouble();
+        const auto next=std::lower_bound(playback.begin(),playback.end(),playhead,[](const QJsonValue& frame,double time){
+            return frame.toArray()[0].toDouble()<time;
+        });
+        const auto hi=(next==playback.end()?last:next->toArray());
+        const auto lo=next==playback.begin()?hi:(next-1)->toArray();
+        const auto dt=hi[0].toDouble()-lo[0].toDouble();
+        const auto mix=dt>0?std::clamp((playhead-lo[0].toDouble())/dt,0.,1.):0.;
+        auto get=[&](int i){return lo[i].toDouble()+(hi[i].toDouble()-lo[i].toDouble())*mix;};
+        auto tools=flow.snapshot()["tools"].toArray();
+        const int tool=lo[6].toInt(-1);
+        const auto spec=tool>=0&&tool<tools.size()?tools[tool].toObject():QJsonObject{};
+        view->setPlayback({float(get(1)),float(get(2)),float(get(3))},get(4),get(5),alongY(),machine.rotaryOrigin(),
+                          spec["diameter"].toDouble(2),spec["overhang"].toDouble(35),spec["holderDiameter"].toDouble(20),
+                          spec["tipRadius"].toDouble(),spec["singleSideHalfAngle"].toDouble(),spec["flute"].toDouble(12));
+        QSignalBlocker blocker(scrub);
+        scrub->setValue(total>0?int(1000*playhead/total):0);
+        timing->setText(QString("%1% · Ước tính %2 phút").arg(scrub->value()/10).arg(total/60,0,'f',1));
+    }
+    void showNcPreview(){
+        QDialog dlg(this);dlg.setWindowTitle("Xem trước G-Code");dlg.resize(720,520);
+        auto* layout=new QVBoxLayout(&dlg);
+        auto* editor=new QPlainTextEdit(ncPreview.isEmpty()?"Chưa có chương trình NC để xem trước.":ncPreview);
+        editor->setReadOnly(true);editor->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        layout->addWidget(editor);dlg.exec();
+    }
+    void refreshProgress(){
+        if(!jobBusy)return;
+        progressText->setText(QString("%1 · %2 giây").arg(progressStage).arg(jobClock.elapsed()/1000.0,0,'f',1));
+    }
+    void drainProgress(){
+        progressPending+=worker.readAllStandardError();
+        for(qsizetype end;(end=progressPending.indexOf('\n'))>=0;){
+            const auto record=QJsonDocument::fromJson(progressPending.left(end)).object();
+            progressPending.remove(0,end+1);
+            if(!record.contains("percent"))continue;
+            progressBar->setValue(std::max(progressBar->value(),record["percent"].toInt()));
+            progressStage=record["stage"].toString();
+            if(record["total"].toInteger()>0)
+                progressStage+=QString(" · vòng %1/%2").arg(record["turn"].toInteger()).arg(record["total"].toInteger());
+            refreshProgress();
+        }
+    }
     void refresh(){
         const QSignalBlocker block(modeBox);
         auto* items=qobject_cast<QStandardItemModel*>(modeBox->model());
@@ -168,6 +257,7 @@ class Workshop final : public QMainWindow {
         }
         modeBox->setCurrentIndex(modeBox->findData(flow.axes()));
         modeBox->setToolTip(modeBox->currentData(Qt::ToolTipRole).toString());
+        const QSignalBlocker treeBlock(tree);
         tree->clear();
         auto branch=[&](QString label,QString key,QStringList children){
             auto* root=new QTreeWidgetItem(tree,{label});root->setData(0,Qt::UserRole,key);
@@ -177,7 +267,17 @@ class Workshop final : public QMainWindow {
         branch("Mô hình","model",{modelFile.isEmpty()?QString("Chưa nạp STL"):QFileInfo(modelFile).fileName()});
         branch("Phôi","stock",{stock.shape=="box"?"Hộp":stock.shape=="cylinder"?"Trụ":"Chóp cụt"});
         branch("Thư viện dao","tools",flow.toolNames());branch("Mặt dẫn","surface",{});
-        branch("Đường dao","paths",flow.pathNames());branch("Máy và post","machine",{machine.name()});
+        branch("Đường dao","paths",flow.pathNames());
+        auto* pathRoot=tree->topLevelItem(tree->topLevelItemCount()-1);
+        pathRoot->setData(0,Qt::UserRole,QString{});
+        const auto paths=flow.snapshot()["paths"].toArray();
+        for(int i=0;i<pathRoot->childCount();++i){
+            auto* row=pathRoot->child(i);
+            row->setFlags(row->flags()|Qt::ItemIsUserCheckable);
+            row->setCheckState(0,paths[i].toObject()["active"].toBool()?Qt::Checked:Qt::Unchecked);
+            row->setText(1,calculatedPaths.contains(i)?"Đã tính":"Chưa tính");
+        }
+        branch("Máy và post","machine",{machine.name()});
         branch("Trợ lý CAM","ai",{});
     }
     void load(){
@@ -190,11 +290,11 @@ class Workshop final : public QMainWindow {
             if(request!=loadRequest)return;
             loading=false;
             if(!ok){QMessageBox::warning(this,"Đọc STL",error);return;}
-            modelFile=f;guideFile.clear();history.clear();view->setModelTransform(QMatrix4x4());changed();view->fit();
+            modelFile=f;guideFile.clear();history.clear();view->setModelTransform(QMatrix4x4());stockAuto=true;modelChanged();view->fit();
             statusBar()->showMessage(QString("Đã nạp %1 tam giác").arg(view->triangleCount()));
         });
     }
-    void transform(const QMatrix4x4& m){if(modelFile.isEmpty())return;history.push_back(view->modelTransform());view->setModelTransform(m*history.last());changed();}
+    void transform(const QMatrix4x4& m){if(modelFile.isEmpty())return;history.push_back(view->modelTransform());view->setModelTransform(m*history.last());modelChanged();}
     void base(){QVector3D lo,hi;if(!view->modelBounds(lo,hi))return;QMatrix4x4 m;m.translate(-lo.x(),-(lo.y()+hi.y())/2,-(lo.z()+hi.z())/2);transform(m);}
     void model(){
         if(modelFile.isEmpty()){load();return;}
@@ -226,27 +326,75 @@ class Workshop final : public QMainWindow {
         if(key=="stock"){
             view->setSimStock({},{},{});stagesBox->setCurrentIndex(0);
             const auto original=stock;
-            if(editStock(this,stock,alongY(),machine.rotaryOrigin(),machine.rotaryDirection(),[this](const Stock& s){drawStock(s);})){
-                syncStock();changed();
+            if(editStock(this,stock,alongY(),machine.rotaryOrigin(),machine.rotaryDirection(),[this](const Stock& s){drawStock(s);},[this](Stock& s){return fitStock(s);},flow.safeClearance())){
+                stockAuto=false;syncStock();changed();
             }else drawStock(original);
         }else if(key=="machine"){if(machine.edit(this)){syncMachine();changed();}}
         else {
             bool saved=false;
             if(key=="tools")saved=flow.editTools(this);
-            if(key=="paths")saved=flow.editPath(this,index);
+            if(key=="paths"){
+                bool calculate=false;
+                if(flow.editPath(this,index,&calculate)){
+                    invalidateOutput();
+                    if(calculate)launchJob("plan-motion",modelFile,{},index);
+                }
+                return;
+            }
             if(key=="surface")saved=flow.editSurface(this);
-            if(key=="ai")saved=flow.editAI(this);
+            if(key=="ai"){
+                const auto beforeStock=stockJson(),beforePlan=flow.snapshot();
+                Workflow::AiAction cmd;
+                if(!flow.editAI(this,&stock,[this](const Stock& draft){return radius(draft);},&cmd))return;
+                if(beforeStock!=stockJson()){stockAuto=false;syncStock();}
+                else drawStock(stock);
+                if(beforeStock!=stockJson()||beforePlan!=flow.snapshot())invalidateOutput();
+                if(cmd==Workflow::CalculateAll)launchJob("plan-motion",modelFile,{},-2);
+                if(cmd==Workflow::ExportRough||cmd==Workflow::ExportFinish){
+                    const auto file=QFileDialog::getSaveFileName(this,"Tính và xuất NC đối chiếu",
+                        cmd==Workflow::ExportRough?"Pha.tap":"Tinh.tap","G-Code (*.tap *.nc)");
+                    if(!file.isEmpty())launchJob("plan-motion",modelFile,{},cmd==Workflow::ExportRough?-3:-4,file);
+                }
+                return;
+            }
             if(saved)invalidateOutput();
         }
     }
-    void launchJob(QString operation,QString file,QString extra={}){
+    void launchJob(QString operation,QString file,QString extra={},int scope=-1,QString directedExport={}){
         if(jobBusy||updating)return;
         if(loading||file.isEmpty()){statusBar()->showMessage("Hãy nạp xong một STL trước khi tính.");return;}
-        if(operation=="plan-motion"&&flow.currentPost(flow.axes()).isEmpty()){
-            statusBar()->showMessage("Hãy chọn post tương thích trong Hồ sơ máy trước khi tính.");return;
+        auto plan=flow.snapshot();
+        jobPaths.clear();
+        if(operation=="plan-motion"){
+            QJsonArray selected;
+            const auto all=plan["paths"].toArray();
+            int axes=4;
+            for(int i=0;i<all.size();++i){
+                auto path=all[i].toObject();
+                const bool fine=path["faceAngle"].toInt()<0&&path["allowance"].toDouble()==0.;
+                bool enabled=path["active"].toBool();
+                if(scope>=0)enabled=i==scope;
+                else if(scope==-2)enabled=true;
+                else if(scope<=-3)enabled=(scope==-4)==fine;
+                if(enabled){axes=std::max(axes,path["axes"].toInt());jobPaths.insert(i);}
+                path["active"]=enabled;
+                selected.append(path);
+            }
+            if(jobPaths.isEmpty()){statusBar()->showMessage("Hãy tích đường dao cần tính.");return;}
+            if(flow.currentPost(axes).isEmpty()&&axes==4&&flow.axes()==5)axes=5;
+            if(flow.currentPost(axes).isEmpty()){statusBar()->showMessage("Hãy chọn post tương thích trong Hồ sơ máy.");return;}
+            plan["paths"]=selected;plan["axes"]=axes;plan["post"]=flow.currentPost(axes);
         }
+        exportTarget=std::move(directedExport);jobInput=file;
+        jobNc.clear();
+        if(operation=="plan-motion"&&spool.isValid())
+            jobNc=spool.filePath(QUuid::createUuid().toString(QUuid::WithoutBraces)+".nc");
         pendingJob=QJsonDocument(QJsonObject{{"operation",operation},{"file",file},
-            {"machine",machine.current()},{"guideFile",guideFile},{"ncFile",extra},{"stock",stockJson()},{"workflow",flow.snapshot()},{"retract",radius(stock)+50},{"transformColumnMajor",modelTransform()}}).toJson(QJsonDocument::Compact)+"\n";
+            {"machine",machine.current()},{"guideFile",guideFile},{"ncFile",extra},{"ncOutput",jobNc},{"stock",stockJson()},{"workflow",plan},{"retract",radius(stock)+flow.safeClearance()},{"transformColumnMajor",modelTransform()}}).toJson(QJsonDocument::Compact)+"\n";
+        stopPlayback();
+        progressPending.clear();progressBar->setValue(0);jobClock.restart();
+        progressStage="Đang khởi động CAMWorker";
+        progressTimer.start(200);
         jobRevision=revision;QString program=QCoreApplication::applicationDirPath()+"/CAMWorker";
 #ifdef Q_OS_WIN
         program+=".exe";
@@ -256,28 +404,121 @@ class Workshop final : public QMainWindow {
         setJobBusy(true);
         worker.start();
     }
+    bool saveNc(const QString& destination){
+        QSaveFile out(destination);
+        if(!out.open(QIODevice::WriteOnly))return false;
+        if(!verifiedFile.isEmpty()){
+            QFile in(verifiedFile);
+            if(!in.open(QIODevice::ReadOnly))return false;
+            while(!in.atEnd()){
+                const auto chunk=in.read(1024*1024);
+                if(chunk.isEmpty()||out.write(chunk)!=chunk.size())return false;
+            }
+        }else if(nc.isEmpty()||out.write(nc)!=nc.size())return false;
+        return out.commit();
+    }
     void exportNc(){
-        if(worker.state()!=QProcess::NotRunning||loading||updating)return;
-        if(nc.isEmpty()){statusBar()->showMessage("Chưa có NC đã qua kiểm tra mô hình.");return;}
+        if(jobBusy||loading||updating)return;
+        QSet<int> selected;
+        const auto paths=flow.snapshot()["paths"].toArray();
+        for(int i=0;i<paths.size();++i)if(paths[i].toObject()["active"].toBool())selected.insert(i);
+        if(!lastNcPaths.isEmpty()&&selected!=lastNcPaths){
+            statusBar()->showMessage("Các đường đang tích đã đổi. Bấm Tính trước khi xuất nhóm này.");return;
+        }
+        if(nc.isEmpty()&&verifiedFile.isEmpty()){statusBar()->showMessage("Chưa có NC đã qua kiểm tra mô hình.");return;}
         auto reply=QMessageBox::warning(this,"Xuất NC đối chiếu",
-            "Tệp đã qua bộ đọc theo mô hình kế hoạch. Cần đối chiếu tọa độ, post, giới hạn và đồ gá trên máy; dùng NC này để kiểm tra.",
+            "Tệp đã qua bộ đọc theo mô hình kế hoạch. Cần đối chiếu tọa độ, post, giới hạn và đồ gá trên máy.",
             QMessageBox::Save|QMessageBox::Cancel,QMessageBox::Cancel);
         if(reply!=QMessageBox::Save)return;
-        auto file=QFileDialog::getSaveFileName(this,"Lưu NC đối chiếu","ArtisanAxis_M3_REVIEW.nc","NC (*.nc *.tap)");
+        const auto file=QFileDialog::getSaveFileName(this,"Lưu NC đối chiếu","ArtisanAxis_REVIEW.nc","G-Code (*.tap *.nc)");
         if(file.isEmpty())return;
-        QSaveFile out(file);
-        if(!out.open(QIODevice::WriteOnly)||out.write(nc)!=nc.size()||!out.commit()){
-            QMessageBox::warning(this,"Lưu NC",out.errorString());return;
-        }
+        if(!saveNc(file)){QMessageBox::warning(this,"Lưu NC","Không ghi được tệp đã chọn.");return;}
         launchJob("verify-nc",modelFile,file);
     }
 public:
     Workshop(){
         setWindowTitle("ArtisanAxis CAM Pro · Xuân Diệu CNC · v" ARTISAN_VERSION);
-        resize(1240,790);view=new View;setCentralWidget(view);
-        auto* dock=new QDockWidget("Dự án",this);tree->setHeaderHidden(true);dock->setWidget(tree);addDockWidget(Qt::LeftDockWidgetArea,dock);
+        resize(1390,850);view=new View;
+        auto* center=new QWidget;
+        auto* layout=new QVBoxLayout(center);
+        layout->setContentsMargins(8,7,8,8);
+        auto* progressRow=new QHBoxLayout;
+        layout->addLayout(progressRow);
+        progressBar->setRange(0,100);progressBar->setValue(0);progressBar->setFixedWidth(180);
+        progressRow->addWidget(progressBar);progressRow->addWidget(progressText,1);
+        auto* cancelButton=new QToolButton;
+        cancelButton->setProperty("accent","cancel");
+        progressRow->addWidget(cancelButton);
+        layout->addWidget(view,1);
+        auto* playbackRow=new QHBoxLayout;layout->addLayout(playbackRow);
+        auto* code=new QPushButton("Xem G-Code");
+        scrub->setRange(0,1000);
+        for(int rate:{1,2,4,8,12,20})playbackRate->addItem(QString("%1×").arg(rate),rate);
+        playbackRow->addWidget(playbackButton);playbackRow->addWidget(scrub,1);
+        playbackRow->addWidget(playbackRate);playbackRow->addWidget(timing);playbackRow->addWidget(code);
+        connect(code,&QPushButton::clicked,this,[this]{showNcPreview();});
+        connect(&progressTimer,&QTimer::timeout,this,[this]{refreshProgress();});
+        connect(playbackButton,&QPushButton::clicked,this,[this]{
+            if(playTimer.isActive()){stopPlayback();return;}
+            if(playback.size()<2)return;
+            if(scrub->value()==1000)playhead=0;
+            playbackButton->setText("⏸ Dừng");playTimer.start(33);
+        });
+        connect(&playTimer,&QTimer::timeout,this,[this]{
+            const double end=playback.last().toArray()[0].toDouble();
+            playhead=std::min(end,playhead+.033*playbackRate->currentData().toInt());
+            if(playhead>=end)stopPlayback();
+            updatePlayback();
+        });
+        connect(scrub,&QSlider::valueChanged,this,[this](int position){
+            if(playback.isEmpty())return;
+            playhead=position/1000.*playback.last().toArray()[0].toDouble();updatePlayback();
+        });
+        setCentralWidget(center);updatePlayback();
+        auto* dock=new QDockWidget("Cây dự án",this);
+        auto* panel=new QWidget;
+        auto* sidebar=new QVBoxLayout(panel);
+        sidebar->setContentsMargins(6,6,6,6);
+        projectControls=new QWidget;
+        auto* shortcuts=new QGridLayout(projectControls);
+        shortcuts->setContentsMargins(0,0,0,0);
+        sidebar->addWidget(projectControls);
+        tree->setHeaderLabels({"Hạng mục","Trạng thái"});
+        tree->setColumnWidth(0,192);
+        sidebar->addWidget(tree,1);
+        dock->setWidget(panel);addDockWidget(Qt::LeftDockWidgetArea,dock);
+        auto quick=[&](QString title,int row,int col,auto run){
+            auto* button=new QPushButton(title);
+            shortcuts->addWidget(button,row,col);
+            connect(button,&QPushButton::clicked,this,run);
+        };
+        quick("Bộ mẫu 4 Mặt + Tinh",0,0,[this]{flow.preset(4);invalidateOutput();});
+        quick("Bộ mẫu 2 Mặt + Tinh",0,1,[this]{flow.preset(2);invalidateOutput();});
+        quick("☑ Chỉ tích Phá",1,0,[this]{if(flow.selectPaths(false)){refresh();saveWorkspace();}});
+        quick("☑ Chỉ tích Tinh",1,1,[this]{if(flow.selectPaths(true)){refresh();saveWorkspace();}});
+        auto selectedPath=[this]{
+            const auto* item=tree->currentItem();
+            return item&&item->data(0,Qt::UserRole)=="paths"?item->data(0,Qt::UserRole+1).toInt():-1;
+        };
+        quick("+ Tạo",2,0,[this]{if(flow.addPath()){invalidateOutput();dialog("paths",flow.pathNames().size()-1);}});
+        quick("📋 Copy",2,1,[this,selectedPath]{const int i=selectedPath();if(i>=0&&flow.addPath(i))invalidateOutput();});
+        quick("🗑 Xóa",3,0,[this,selectedPath]{
+            const auto i=selectedPath();
+            if(i>=0&&QMessageBox::question(this,"Xóa đường dao","Xóa đường dao đang chọn?")==QMessageBox::Yes&&flow.removePath(i))
+                invalidateOutput();
+        });
+        connect(tree,&QTreeWidget::itemChanged,this,[this](QTreeWidgetItem* item,int column){
+            if(jobBusy||column!=0||item->data(0,Qt::UserRole)!="paths")return;
+            if(flow.setPathActive(item->data(0,Qt::UserRole+1).toInt(),item->checkState(0)==Qt::Checked))
+                saveWorkspace();
+        });
         auto* bar=addToolBar("Xưởng");bar->setMovable(false);
         auto action=[&](QString name,auto fn){auto* a=bar->addAction(name);connect(a,&QAction::triggered,this,fn);return a;};
+        action("Mở STL",[this]{load();})->setShortcut(QKeySequence::Open);
+        for(const QString name:{"Fit","XY","YZ","ZX","3D Iso"})
+            action(name,[this,name]{if(name=="Fit")view->fit();else view->setCamera(name=="3D Iso"?"iso":name);});
+        bar->addSeparator();
+        auto accent=[bar](QAction* act,const char* kind){bar->widgetForAction(act)->setProperty("accent",kind);};
         auto* modeLabel=new QLabel("Chế độ:");
         modeLabel->setBuddy(modeBox);
         bar->addWidget(modeLabel);
@@ -293,28 +534,36 @@ public:
             invalidateOutput();
             statusBar()->showMessage("Đã chọn "+modeBox->currentText()+" · Post: "+flow.currentPost(axes));
         });
-        action("Tính",[this]{launchJob("plan-motion",modelFile);});
-        cancelJob=action("Hủy tác vụ",[this]{
+        accent(action("🤖 AI Tự Động Lập Trình (1-Click)",[this]{dialog("ai");}),"ai");
+        accent(action("⚡ Tính các đường đã tích",[this]{launchJob("plan-motion",modelFile);}),"calculate");
+        accent(action("⬇ Xuất G-Code (.tap/.nc)",[this]{exportNc();}),"export");
+        cancelJob=new QAction("Hủy tác vụ",this);
+        cancelButton->setDefaultAction(cancelJob);
+        connect(cancelJob,&QAction::triggered,this,[this]{
             if(!jobBusy||jobCancelled)return;
             jobCancelled=true;
             cancelJob->setEnabled(false);
-            statusBar()->showMessage("Đang hủy tác vụ…");
+            progressStage="Đang hủy tác vụ…";
+            statusBar()->showMessage(progressStage);
             worker.kill();
         });
         cancelJob->setEnabled(false);
-        bar->addSeparator();
-        action("Mở STL",[this]{load();})->setShortcut(QKeySequence::Open);
-        action("Biến đổi",[this]{model();});action("Lấy gốc X0",[this]{base();});
-        action("Hoàn tác",[this]{if(!history.isEmpty()){view->setModelTransform(history.takeLast());changed();}})->setShortcut(QKeySequence::Undo);
-        action("Phôi",[this]{dialog("stock");});action("Dao",[this]{dialog("tools");});action("Máy / Post",[this]{dialog("machine");});
-        action("Trợ lý",[this]{dialog("ai");});action("2 mặt + tinh",[this]{flow.preset(2);invalidateOutput();});
-        action("4 mặt + tinh",[this]{flow.preset(4);invalidateOutput();});
-        action("Xuất NC",[this]{exportNc();});
-        action("Đọc lại NC",[this]{
+        addToolBarBreak();
+        auto* cameras=addToolBar("Cấu hình và khung nhìn");
+        cameras->setMovable(false);
+        auto secondary=[&](QString name,auto fn){
+            auto* a=cameras->addAction(name);connect(a,&QAction::triggered,this,fn);return a;
+        };
+        secondary("Biến đổi",[this]{model();});secondary("Lấy gốc X0",[this]{base();});
+        secondary("Hoàn tác",[this]{if(!history.isEmpty()){view->setModelTransform(history.takeLast());modelChanged();}})->setShortcut(QKeySequence::Undo);
+        secondary("Phôi",[this]{dialog("stock");});secondary("Dao",[this]{dialog("tools");});secondary("Máy / Post",[this]{dialog("machine");});
+        secondary("Trợ lý",[this]{dialog("ai");});secondary("2 mặt + tinh",[this]{flow.preset(2);invalidateOutput();});
+        secondary("4 mặt + tinh",[this]{flow.preset(4);invalidateOutput();});
+        secondary("Xuất NC",[this]{exportNc();});
+        secondary("Đọc lại NC",[this]{
             auto file=QFileDialog::getOpenFileName(this,"Đọc NC xuất từ Mốc 3",{},"NC (*.nc *.tap)");
             if(!file.isEmpty())launchJob("verify-nc",modelFile,file);
         });
-        auto* cameras=addToolBar("Khung nhìn");
         for(QString key:{"iso","xy","yz","zx"})connect(cameras->addAction(key.toUpper()),&QAction::triggered,this,[this,key]{view->setCamera(key);});
         connect(cameras->addAction("Vừa khung"),&QAction::triggered,this,[this]{view->fit();});
         auto* showStock=cameras->addAction("Hiện phôi");showStock->setCheckable(true);showStock->setChecked(true);
@@ -355,17 +604,17 @@ public:
             if(modelFile.isEmpty())return;
             history.append(view->modelTransform());
             view->setModelTransform(QMatrix4x4());
-            changed();view->fit();
+            modelChanged();view->fit();
         });
         auto* settings=menuBar()->addMenu("Thiết lập");
+        connect(settings->addAction("Tự ôm phôi theo mẫu STL"),&QAction::triggered,this,[this]{
+            if(fitStock(stock)){stockAuto=true;syncStock();changed();}
+        });
         connect(settings->addAction("Mặt dẫn"),&QAction::triggered,this,[this]{dialog("surface");});
-        connect(settings->addAction("Dựng mặt bọc STL"),&QAction::triggered,this,[this]{if(worker.state()==QProcess::NotRunning){guideFile.clear();invalidateOutput();launchJob("wrap-stl",modelFile);}});
+        connect(settings->addAction("Dựng mặt bọc STL"),&QAction::triggered,this,[this]{launchJob("wrap-stl",modelFile);});
         connect(settings->addAction("Nhập mặt Rhino .3dm…"),&QAction::triggered,this,[this]{
             auto file=QFileDialog::getOpenFileName(this,"Nhập mặt Rhino",{},"Rhino (*.3dm)");
-            if(!file.isEmpty()){
-                if(worker.state()!=QProcess::NotRunning)return;
-                invalidateOutput();guideFile=file;launchJob("import-3dm",file);
-            }
+            if(!file.isEmpty())launchJob("import-3dm",file);
         });
         auto* application=menuBar()->addMenu("Ứng dụng");
         auto* updates=application->addAction("Cập nhật 1-Click");
@@ -432,31 +681,48 @@ public:
         for(auto* control:menuBar()->findChildren<QAction*>())jobControls.insert(control);
         jobControls.remove(cancelJob);
         connect(tree,&QTreeWidget::itemDoubleClicked,this,[this](QTreeWidgetItem* item,int){dialog(item->data(0,Qt::UserRole).toString(),item->data(0,Qt::UserRole+1).toInt());});
+        connect(&worker,&QProcess::readyReadStandardError,this,[this]{drainProgress();});
         connect(&worker,&QProcess::started,this,[this]{
             if(jobCancelled){worker.kill();return;}
             worker.write(pendingJob);worker.closeWriteChannel();statusBar()->showMessage("CAMWorker đang xử lý…");
         });
         connect(&worker,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
             if(error!=QProcess::FailedToStart)return;
+            progressTimer.stop();progressText->setText("Chưa khởi chạy được CAMWorker");
             setJobBusy(false);
             statusBar()->showMessage(jobCancelled?"Đã hủy tác vụ.":worker.errorString());
         });
         connect(&worker,&QProcess::finished,this,[this](int,QProcess::ExitStatus){
-            const auto unlock=qScopeGuard([this]{setJobBusy(false);});
+            drainProgress();progressTimer.stop();
+            const auto unlock=qScopeGuard([this]{
+                if(!jobNc.isEmpty()&&jobNc!=verifiedFile)QFile::remove(jobNc);
+                setJobBusy(false);
+            });
             const auto result=QJsonDocument::fromJson(worker.readAllStandardOutput()).object();
-            if(jobCancelled){statusBar()->showMessage("Đã hủy tác vụ.");return;}
+            if(jobCancelled){progressText->setText("Đã hủy tác vụ.");statusBar()->showMessage("Đã hủy tác vụ.");return;}
             if(jobRevision!=revision){statusBar()->showMessage("Cấu hình đã đổi trong lúc tính.");return;}
             if(!result.value("ok").toBool()){
                 auto error=result.value("error").toString("Worker chưa trả về kết quả hợp lệ.");
-                statusBar()->showMessage(error);QMessageBox::warning(this,"CAMWorker",error);return;
+                progressText->setText("Lỗi · "+error);statusBar()->showMessage(error);QMessageBox::warning(this,"CAMWorker",error);return;
             }
+            progressBar->setValue(100);
+            progressText->setText(QString("Đã hoàn tất · %1 giây").arg(jobClock.elapsed()/1000.0,0,'f',1));
             auto kind=result.value("kind").toString();
             if(kind=="motion"){
                 const bool savedFile=result.value("fileVerification").toBool();
                 if(!savedFile){
+                    if(!verifiedFile.isEmpty())QFile::remove(std::exchange(verifiedFile,{}));
+                    if(result.value("ncOnDisk").toBool())verifiedFile=jobNc;
                     nc=result.value("nc").toString().toUtf8();
                     lifts=result.value("lifts").toArray();
-                }else if(!result.value("verified").toBool())nc.clear();
+                    calculatedPaths.unite(jobPaths);lastNcPaths=jobPaths;
+                    refresh();
+                    if(!exportTarget.isEmpty()&&!saveNc(exportTarget))
+                        QMessageBox::warning(this,"Xuất NC","Tệp chưa qua kiểm chứng hoặc không ghi được.");
+                }
+                ncPreview=result.value("ncPreview").toString();
+                playback=result.value("playback").toArray();playhead=0;
+                updatePlayback();
                 cutOverlay=unpack(result.value("segments"));stages=result.value("stages").toArray();
                 diagnostics=result.value("diagnostics").toArray();
                 voxelPitch=result.value("pitch").toDouble();
@@ -464,13 +730,15 @@ public:
                 for(auto v:stages){int i=v.toObject().value("group").toInt();stagesBox->addItem(i==0?"Sau phá mặt":i==1?"Sau cận tinh":"Sau chạy tinh");}
                 statusBar()->showMessage(QString("%1 · %2 khối · %3 lớp không tới · %4 lần tách%5")
                     .arg(result.value("verified").toBool()?(savedFile?"Tệp NC đọc lại · ĐẠT theo mô hình":"ĐẠT theo mô hình"):"LỖI · mở Nhật ký NC")
-                    .arg(result.value("blocks").toInt()).arg(result.value("unreachable").toInt()).arg(lifts.size())
+                    .arg(result.value("blocks").toInt()).arg(result.value("unreachable").toInt()).arg(result.value("liftCount").toInteger())
                     .arg(result.value("calibratedOffset").toBool()?QString():QString(" · chưa khai báo offset máy")));
             }else if(kind=="plan"){
                 nc=result.value("nc").toString().toUtf8();cutOverlay=unpack(result.value("segments"));
                 statusBar()->showMessage(QString("4X · %1 điểm · %2 vị trí bị loại · NC để đối chiếu")
                     .arg(result.value("cuts").toInteger()).arg(result.value("rejected").toInteger()));
             }else{
+                const auto nextGuide=kind=="rhino"?jobInput:QString{};
+                if(guideFile!=nextGuide){guideFile=nextGuide;invalidateOutput();}
                 surfaceOverlay=unpack(result.value("surface"));
                 statusBar()->showMessage(kind=="rhino"?QString("Mặt Rhino đã nhập · %1 đối tượng hoặc mặt bỏ qua").arg(result.value("skipped").toInt()):
                                                    QString("Đã dựng mặt bọc tự động từ STL."));
@@ -486,6 +754,7 @@ public:
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setDepthBufferSize(24);format.setVersion(2,1);QSurfaceFormat::setDefaultFormat(format);
     QApplication app(argc,argv);
+    applyWorkshopTheme(app);
     app.setOrganizationName("XuanDieuCNC");app.setApplicationName("ArtisanAxis");app.setApplicationVersion(ARTISAN_VERSION);
     Workshop window;window.show();
     const auto args=app.arguments();

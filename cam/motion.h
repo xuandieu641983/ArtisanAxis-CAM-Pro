@@ -21,9 +21,12 @@ struct Motion {
     int tool=0,pass=0;
     MotionKind kind=MotionKind::Cut;
     unsigned sourceLine=0;
+    double feed=600;
+    int rpm=16000;
 };
 struct Lift {int pass;Pose location;std::string reason;};
 struct Spiral {std::vector<Motion> moves;std::vector<Lift> lifts;unsigned unreachable=0;};
+using SpiralProgress=std::function<void(size_t completed,size_t total,size_t samplesPerTurn)>;
 using GuideNormal=std::function<V(double u,double v)>;
 V partPoint(Pose p,const Machine& m);
 Pose interpolate(Pose a,Pose b,double t);
@@ -38,13 +41,14 @@ public:
     double clearance(Pose,const Cutter&) const;
     bool sweep(Pose a,Pose b,const Cutter&,const std::function<Pose(double)>& curve={},double speedBound=0,double minimumZ=-std::numeric_limits<double>::infinity(),TipCheck tip=TipCheck::Strict) const;
 private:
-    Tree& model_;
+    mutable Tree model_;
     const Machine& machine_;
     const DistanceGrid* sdf_;
 };
-Spiral planSpiral(Tree&,const Machine&,const Cutter&,const PathSpec&,int pass,const GuideNormal& guide={},const DistanceGrid* sdf=nullptr);
+Spiral planSpiral(Tree&,const Machine&,const Cutter&,const PathSpec&,int pass,const GuideNormal& guide={},const DistanceGrid* sdf=nullptr,const SpiralProgress& progress={});
 std::string writeMotionNc(const Spiral&,const Machine&,std::string_view post);
 struct Diagnostic {unsigned line;std::string message;};
 struct Verified {std::vector<Motion> motions;std::vector<Diagnostic> errors;unsigned blocks=0;};
-Verified verifyMotionNc(std::string_view,const Machine&,const std::vector<Cutter>&,MotionChecks&);
+using NcProgress=std::function<void(size_t read,size_t total)>;
+Verified verifyMotionNc(std::string_view,const Machine&,const std::vector<Cutter>&,MotionChecks&,const NcProgress& progress={});
 }

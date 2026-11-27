@@ -83,7 +83,7 @@ StockSim simulateStock(const StockSpec& stock,const Spiral& program,const Machin
         if(group!=-1&&nextGroup!=group)capture(group);
         group=nextGroup;
         double travel=controllerSpeed(previous.pose,move.pose,machine)+
-            (std::abs(move.pose.a-previous.pose.a)*(norm(move.pose.tip)+tool.overhang+40)+
+            (std::abs(move.pose.a-previous.pose.a)*(std::hypot(move.pose.tip.y,move.pose.tip.z)+tool.overhang+40)+
              std::abs(move.pose.b-previous.pose.b)*(tool.overhang+40))*std::numbers::pi/180.;
         if(!std::isfinite(travel)||travel/h>100000)throw std::runtime_error("Stock simulation movement exceeds sample budget");
         int steps=std::max(1,int(std::ceil(travel/(h*.55))));

@@ -15,4 +15,4 @@ struct Stock {
     double radius(const QVector3D& pivot, const QVector3D& axis, bool alongY) const;
 };
 bool editStock(QWidget* parent, Stock& committed, bool alongY, const QVector3D& pivot, const QVector3D& axis,
-               const std::function<void(const Stock&)>& preview);
+               const std::function<void(const Stock&)>& preview,const std::function<bool(Stock&)>& fit={},double clearance=50);

@@ -74,13 +74,33 @@ int main(int argc,char **argv){
     QTimer::singleShot(0,[&]{auto*d=modal();check(field<QDoubleSpinBox>(d,"Điểm quanh chu vi")->maximum()==96&&field<QDoubleSpinBox>(d,"Lát theo trục")->maximum()==128,"surface range matches worker");field<QDoubleSpinBox>(d,"Điểm quanh chu vi")->setValue(70);field<QDoubleSpinBox>(d,"Lát theo trục")->setValue(100);accept(d);});
     check(flow.editSurface(&parent),"surface accepts");
     check(flow.snapshot().value("wrapColumns").toInt()==70&&flow.snapshot().value("wrapStacks").toInt()==100,"surface controls serialized");
-    QTimer::singleShot(0,[&]{auto*d=modal();field<QCheckBox>(d,"Đưa vào công việc")->setChecked(false);field<QDoubleSpinBox>(d,"Bước dịch (mm)")->setValue(4);field<QDoubleSpinBox>(d,"Lượng dư (mm)")->setValue(4.5);accept(d);});
+    QTimer::singleShot(0,[&]{
+        auto* d=modal();
+        field<QCheckBox>(d,"Đưa vào công việc")->setChecked(false);
+        field<QDoubleSpinBox>(d,"Bước dịch (mm)")->setValue(4);
+        field<QDoubleSpinBox>(d,"Lượng dư (mm)")->setValue(4.5);
+        field<QDoubleSpinBox>(d,"Bước xuống chia lớp (mm)")->setValue(1.25);
+        field<QDoubleSpinBox>(d,"Khoảng cách điểm (0 = tự động)")->setValue(.7);
+        field<QDoubleSpinBox>(d,"Min Z (mm)")->setValue(-3);
+        field<QDoubleSpinBox>(d,"Max Z (mm)")->setValue(30);
+        field<QDoubleSpinBox>(d,"Tốc độ cắt F (mm/phút)")->setValue(780);
+        field<QDoubleSpinBox>(d,"Tốc độ trục chính (RPM)")->setValue(12500);
+        field<QDoubleSpinBox>(d,"Clipping đầu trục (mm)")->setValue(3);
+        field<QDoubleSpinBox>(d,"Clipping cuối trục (mm)")->setValue(70);
+        field<QComboBox>(d,"Hướng chạy X")->setCurrentIndex(1);
+        check(!field<QDoubleSpinBox>(d,"Góc B Min (°)")->isEnabled(),"raster disables tilt");
+        accept(d);
+    });
     check(flow.editPath(&parent,0),"path accepts");
     auto path=flow.snapshot().value("paths").toArray().first().toObject();
     check(!path.value("active").toBool()&&path.value("step").toDouble()==4&&path.value("allowance").toDouble()==4.5,"three path controls serialized");
+    check(path["stepDown"].toDouble()==1.25&&path["pointSpacing"].toDouble()==.7&&path["zMin"].toDouble()==-3&&
+          path["zMax"].toDouble()==30&&path["feed"].toDouble()==780&&path["rpm"].toInt()==12500&&
+          path["clipMin"].toDouble()==3&&path["clipMax"].toDouble()==70&&path["reverse"].toBool(),
+          "advanced toolpath fields reach worker configuration");
     QTimer::singleShot(0,[&]{
         auto*d=modal();field<QPlainTextEdit>(d,"Mô tả công việc")->setPlainText("Phá 2 mặt, 5 trục, dao phá Ø10 dài 55 mm, tinh góc 15, chiều dài dao tinh 77, bước tinh 0.21, dư cận tinh 1.3");
-        QPushButton* parse=nullptr;for(auto *b:d->findChildren<QPushButton*>())if(b->text()=="Đọc mô tả")parse=b;
+        QPushButton* parse=nullptr;for(auto *b:d->findChildren<QPushButton*>())if(b->text()=="✨ Đọc & Áp Dụng")parse=b;
         check(parse,"AI parse button");parse->click();
         check(field<QComboBox>(d,"Phá mặt")->currentIndex()==0,"AI parsed face selector");
         check(field<QComboBox>(d,"Chế độ xoay")->currentIndex()==1,"AI parsed axes selector");

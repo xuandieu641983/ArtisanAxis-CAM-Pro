@@ -3,6 +3,8 @@
 #include <vector>
 #include <limits>
 #include <cstddef>
+#include <memory>
+#include <functional>
 
 namespace cam {
 struct V {
@@ -40,8 +42,9 @@ private:
     V pivot_{}, basis_[3]{};
     V inFrame(V)const;
     Bounds inFrame(Bounds)const;
-    std::vector<Tri> tris_;
-    std::vector<Node> nodes_;
+    struct Storage { std::vector<Tri> tris; std::vector<Node> nodes; };
+    // Copies share immutable mesh storage and retain independent query frames.
+    std::shared_ptr<Storage> data_;
     unsigned build(unsigned first,unsigned last,unsigned depth);
 };
 struct Wrap {
@@ -67,9 +70,21 @@ struct Cutter {
     std::array<Span,4> spans() const;
 };
 struct StockSpec {Bounds bounds; int shape;double endRatio;bool axisY;};
-struct PathSpec {int tool,angle;double step,allowance;bool finish;};
+struct PathSpec {
+    int tool,angle;
+    double step,allowance;
+    bool finish;
+    double pointSpacing=0,stepDown=0;
+    double minZ=-std::numeric_limits<double>::infinity(),maxZ=std::numeric_limits<double>::infinity();
+    double clipMin=-std::numeric_limits<double>::infinity(),clipMax=std::numeric_limits<double>::infinity();
+    double bMin=-20,bMax=20,feed=600;
+    int rpm=16000;
+    bool reverse=false;
+    int axes=0; // 0 inherits the machine/program mode.
+};
 struct Cut {V point;double angle;int tool;int pass;bool link=false;};
 struct Plan {std::vector<Cut> cuts; unsigned rejected=0; double safe;};
+using RasterProgress=std::function<void(size_t pass,size_t row,size_t total)>;
 Plan generate(const std::vector<Tri>& mesh,const StockSpec&,const std::vector<Cutter>&,
-              const std::vector<PathSpec>&,bool twoFace,V pivot,double safe);
+              const std::vector<PathSpec>&,bool twoFace,V pivot,double safe,const RasterProgress& progress={});
 }

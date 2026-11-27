@@ -100,22 +100,23 @@ double triangleDrop(const Tri& t,double x,double y,double r,bool spherical){
     return z;
 }
 
-Tree::Tree(std::vector<Tri> mesh):tris_(std::move(mesh)){
-    if(tris_.empty())throw std::invalid_argument("STL không có mặt tam giác.");
+Tree::Tree(std::vector<Tri> mesh):data_(std::make_shared<Storage>()){
+    data_->tris=std::move(mesh);
+    if(data_->tris.empty())throw std::invalid_argument("STL không có mặt tam giác.");
     // Heap indices permit disjoint, parallel writes through the upper levels.
-    const size_t n=tris_.size();
+    const size_t n=data_->tris.size();
     size_t leaves=1;while(leaves<(n+7)/8)leaves*=2;
-    nodes_.resize(2*leaves);
+    data_->nodes.resize(2*leaves);
     build(0,unsigned(n),1);
 }
 unsigned Tree::build(unsigned first,unsigned last,unsigned idx){
-    auto& n=nodes_[idx];n={empty(),first,last,0,0};
-    for(unsigned i=first;i<last;++i)for(auto v:tris_[i].p)extend(n.box,v);
+    auto& n=data_->nodes[idx];n={empty(),first,last,0,0};
+    for(unsigned i=first;i<last;++i)for(auto v:data_->tris[i].p)extend(n.box,v);
     if(last-first<=8)return idx;
     const auto span=n.box.hi-n.box.lo;int axis=span.x>=span.y&&span.x>=span.z?0:span.y>=span.z?1:2;
     const unsigned mid=first+(last-first)/2;
     auto centroid=[axis](const Tri& t){return coord(t.p[0]+t.p[1]+t.p[2],axis);};
-    std::nth_element(tris_.begin()+first,tris_.begin()+mid,tris_.begin()+last,[&](auto& a,auto& b){return centroid(a)<centroid(b);});
+    std::nth_element(data_->tris.begin()+first,data_->tris.begin()+mid,data_->tris.begin()+last,[&](auto& a,auto& b){return centroid(a)<centroid(b);});
     n.left=idx*2;n.right=idx*2+1;
     if(idx<4 && last-first>32000){
         auto left=std::async(std::launch::async,[&]{build(first,mid,n.left);});
@@ -123,7 +124,7 @@ unsigned Tree::build(unsigned first,unsigned last,unsigned idx){
     }else{build(first,mid,n.left);build(mid,last,n.right);}
     return idx;
 }
-Bounds Tree::bounds()const{return nodes_[1].box;}
+Bounds Tree::bounds()const{return data_->nodes[1].box;}
 void Tree::setFrame(double angle,bool axisY,V pivot,double b){
     angle_=angle;axisY_=axisY;pivot_=pivot;framed_=true;
     basis_[0]=tilt(face({1,0,0},angle_,axisY_),-b);
@@ -146,13 +147,16 @@ double Tree::drop(double x,double y,double r,bool spherical)const{
     double best=-inf;
     unsigned pending[128]={1};int count=1;
     while(count){
-        const auto& n=nodes_[pending[--count]];
+        const auto& n=data_->nodes[pending[--count]];
         const auto b=framed_?inFrame(n.box):n.box;
         const double dx=std::max({b.lo.x-x,0.,x-b.hi.x}),dy=std::max({b.lo.y-y,0.,y-b.hi.y});
         if(sq(dx)+sq(dy)>r*r+eps || b.hi.z<best)continue;
         if(n.left){pending[count++]=n.left;pending[count++]=n.right;}
         else for(unsigned i=n.begin;i<n.end;++i){
-            auto t=tris_[i];if(framed_)for(auto& p:t.p)p=inFrame(p);
+            auto t=data_->tris[i];if(framed_)for(auto& p:t.p)p=inFrame(p);
+            if(std::min({t.p[0].x,t.p[1].x,t.p[2].x})>x+r+1e-5||std::max({t.p[0].x,t.p[1].x,t.p[2].x})<x-r-1e-5||
+               std::min({t.p[0].y,t.p[1].y,t.p[2].y})>y+r+1e-5||std::max({t.p[0].y,t.p[1].y,t.p[2].y})<y-r-1e-5||
+               std::max({t.p[0].z,t.p[1].z,t.p[2].z})<best)continue;
             best=std::max(best,triangleDrop(t,x,y,r,spherical));
         }
     }
@@ -162,17 +166,34 @@ bool Tree::spanClear(V tip,Span s,double tolerance)const{
     if(s.high<=s.low)return true;
     // Conservative: all target geometry in this projected disk must remain
     // below the bottom of this non-cutting segment.
-    return height(tip.x,tip.y,s.radius)<tip.z+s.low-tolerance;
+    const double threshold=tip.z+s.low-tolerance, rr=s.radius*s.radius;
+    unsigned pending[128]={1};int count=1;
+    while(count){
+        const auto& node=data_->nodes[pending[--count]];
+        const auto box=framed_?inFrame(node.box):node.box;
+        if(box.hi.z<threshold)continue;
+        const double dx=std::max({box.lo.x-tip.x,0.,tip.x-box.hi.x});
+        const double dy=std::max({box.lo.y-tip.y,0.,tip.y-box.hi.y});
+        if(dx*dx+dy*dy>rr+eps)continue;
+        if(node.left){pending[count++]=node.left;pending[count++]=node.right;continue;}
+        for(unsigned i=node.begin;i<node.end;++i){
+            auto tri=data_->tris[i];
+            if(framed_)for(auto& point:tri.p)point=inFrame(point);
+            if(std::max({tri.p[0].z,tri.p[1].z,tri.p[2].z})<threshold)continue;
+            if(triangleDrop(tri,tip.x,tip.y,s.radius,false)>=threshold)return false;
+        }
+    }
+    return true;
 }
 double Tree::distance(V p)const{
     double best=inf;unsigned pending[128]={1};int count=1;
     while(count){
-        const auto& n=nodes_[pending[--count]];
+        const auto& n=data_->nodes[pending[--count]];
         if(boxDist2(n.box,p)>best)continue;
         if(n.left){
-            const auto a=boxDist2(nodes_[n.left].box,p),b=boxDist2(nodes_[n.right].box,p);
+            const auto a=boxDist2(data_->nodes[n.left].box,p),b=boxDist2(data_->nodes[n.right].box,p);
             pending[count++]=a>b?n.left:n.right;pending[count++]=a>b?n.right:n.left;
-        }else for(unsigned i=n.begin;i<n.end;++i)best=std::min(best,triDist2(p,tris_[i]));
+        }else for(unsigned i=n.begin;i<n.end;++i)best=std::min(best,triDist2(p,data_->tris[i]));
     }
     return std::sqrt(best);
 }
@@ -181,11 +202,11 @@ bool Tree::insideClosedMesh(V p)const{
     std::vector<double> hits;
     unsigned pending[128]={1};int count=1;
     while(count){
-        const auto& n=nodes_[pending[--count]];
+        const auto& n=data_->nodes[pending[--count]];
         if(p.x<n.box.lo.x||p.x>n.box.hi.x||p.y<n.box.lo.y||p.y>n.box.hi.y||p.z>=n.box.hi.z)continue;
         if(n.left){pending[count++]=n.left;pending[count++]=n.right;continue;}
         for(unsigned i=n.begin;i<n.end;++i){
-            const auto& t=tris_[i];
+            const auto& t=data_->tris[i];
             const auto norm=cross(t.p[1]-t.p[0],t.p[2]-t.p[0]);
             if(std::abs(norm.z)<eps||!containsXY(t,p.x,p.y))continue;
             double z=t.p[0].z-(norm.x*(p.x-t.p[0].x)+norm.y*(p.y-t.p[0].y))/norm.z;
@@ -201,11 +222,11 @@ std::vector<std::array<double,2>> Tree::section(double x)const{
     std::vector<std::array<double,2>> out;
     unsigned pending[128]={1};int count=1;
     while(count){
-        const auto& n=nodes_[pending[--count]];
+        const auto& n=data_->nodes[pending[--count]];
         if(x<n.box.lo.x||x>n.box.hi.x)continue;
         if(n.left){pending[count++]=n.left;pending[count++]=n.right;continue;}
         for(unsigned i=n.begin;i<n.end;++i)for(int e=0;e<3;++e){
-            V a=tris_[i].p[e],b=tris_[i].p[(e+1)%3];
+            V a=data_->tris[i].p[e],b=data_->tris[i].p[(e+1)%3];
             if(a.x==x)out.push_back({a.y,a.z});
             if((a.x<x&&b.x>x)||(a.x>x&&b.x<x)){
                 V p=a+(b-a)*((x-a.x)/(b.x-a.x));out.push_back({p.y,p.z});

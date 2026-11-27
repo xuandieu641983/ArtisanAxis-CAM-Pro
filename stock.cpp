@@ -55,7 +55,7 @@ double Stock::radius(const QVector3D& pivot,const QVector3D& axis,bool alongY) c
 }
 
 bool editStock(QWidget* parent, Stock& committed,bool alongY,const QVector3D& pivot,const QVector3D& axis,
-               const std::function<void(const Stock&)>& preview) {
+               const std::function<void(const Stock&)>& preview,const std::function<bool(Stock&)>& fit,double clearance) {
     Stock s=committed;
     QDialog dialog(parent); dialog.setWindowTitle("Phôi · kích thước thực (mm)");
     QGridLayout g(&dialog);
@@ -88,7 +88,7 @@ bool editStock(QWidget* parent, Stock& committed,bool alongY,const QVector3D& pi
         s.shape=shapes.currentData().toString(); s.expansion=expansion->value();s.endRatio=ratio->value();
         ratio->setEnabled(s.shape=="frustum");
         const auto R=s.radius(pivot,axis,alongY);
-        report.setText(QString("R góc %1 mm   ·   Nhấc tối thiểu %2 mm").arg(R,0,'f',4).arg(R+50,0,'f',4));preview(s);
+        report.setText(QString("R góc %1 mm   ·   Nhấc tối thiểu %2 mm").arg(R,0,'f',4).arg(R+clearance,0,'f',4));preview(s);
     };
     for(int i=0;i<3;i++)for(int j=0;j<3;j++)
         QObject::connect(fields[i][j],&QDoubleSpinBox::valueChanged,&dialog,[&,i,j](double value){
@@ -99,5 +99,19 @@ bool editStock(QWidget* parent, Stock& committed,bool alongY,const QVector3D& pi
     QObject::connect(&shapes,&QComboBox::currentIndexChanged,&dialog,update);
     QObject::connect(&buttons,&QDialogButtonBox::accepted,&dialog,&QDialog::accept);QObject::connect(&buttons,&QDialogButtonBox::rejected,&dialog,&QDialog::reject);
     update();
+    if(fit){
+        auto* button=new QPushButton("Tự ôm theo mẫu STL");
+        g.addWidget(button,9,0,1,4);
+        QObject::connect(button,&QPushButton::clicked,&dialog,[&]{
+            Stock next=s;
+            if(!fit(next))return;
+            for(int i=0;i<3;++i){
+                const QSignalBlocker a(fields[i][0]),b(fields[i][1]);
+                fields[i][0]->setValue(next.min[i]);fields[i][1]->setValue(next.max[i]);
+            }
+            shapes.setCurrentIndex(0);
+            update();
+        });
+    }
     if(dialog.exec()==QDialog::Accepted){committed=s;return true;}preview(committed);return false;
 }

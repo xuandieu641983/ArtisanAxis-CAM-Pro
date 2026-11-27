@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/artisanaxis">
+    <file>artisanaxis.ico</file>
+  </qresource>
+</RCC>
