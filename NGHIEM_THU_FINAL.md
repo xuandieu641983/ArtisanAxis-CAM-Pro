@@ -1,4 +1,4 @@
-# Nghiệm thu ArtisanAxis CAM Pro v1.0.0
+# Nghiệm thu ArtisanAxis CAM Pro v1.0.1
 
 Ngày 27/11/2026 · Xuân Diệu CNC
 
@@ -19,6 +19,8 @@ Ngày 27/11/2026 · Xuân Diệu CNC
 | Machine | ĐẠT | Ba ô tiếng Việt hiện đúng tham chiếu CM600 264,607 / 455,104 / −470,090 mm. Sửa số bỏ xác nhận cũ. Lưu và mở lại giữ cả giá trị lẫn xác nhận. Mode/H1 hiển thị dưới dạng thông tin. |
 | Xuất mọi kiểu máy/post | LỖI | Bộ xuất mô hình hóa máy 4X bàn A và máy 5X bàn A + đầu B vuông góc theo các dialect đã có. Đầu–đầu, bàn–bàn, G43.5 và post tự định nghĩa chưa có động học/bộ phát cho sản xuất. Chưa xác minh hành vi thực tế trên từng bộ điều khiển. |
 | AI | ĐẠT | Kiểm tra mô tả, nút Đọc, số mặt, 4X/5X, dao phá/tinh, hai chiều dài nhô, bước tinh, lượng dư và giữ chỉnh tay. |
+| Chế độ 4X/5X trên thanh công cụ | ĐẠT | WorkshopAudit kiểm tra cả hai chiều giữa thanh công cụ và Trợ lý CAM, post tương ứng của CM600, hồ sơ chỉ hỗ trợ một chế độ và khôi phục chế độ từ phiên đã lưu. Đổi chế độ cập nhật các lượt xoay. Lượt phá mặt vẫn dùng 4X. |
+| Khóa cấu hình khi CAMWorker đang chạy | ĐẠT | WorkshopAudit chạy CAMWorker thật, thử gọi thao tác mở STL, đổi bộ mẫu và mở cài đặt khi khóa. Worker trả và hiển thị kết quả trên cùng phiên bản cấu hình. Hủy chủ động đưa các nút về trạng thái ban đầu và giữ kết quả trước đó. |
 | Bộ mẫu và Lưu & Đóng | ĐẠT | Preset 2/4 mặt và lưu Model/Stock được thử ở mức Workshop với QProcess vẫn NotRunning. Lưu hộp thoại các nhóm còn lại áp dụng bản nháp mà không gọi khởi chạy worker. |
 | Lưu ngoài thư mục cài đặt | ĐẠT | Thử khôi phục STL liên kết, biến đổi, phôi và đường dao phiên trước mà không tính lại. Cấu hình máy lưu theo người dùng. |
 | Cam kết 0 nút chết, 0 ô trang trí trên toàn bộ Windows | LỖI | Đã kiểm toán các hộp thoại và thao tác được liệt kê ở trên. Chưa có chạy Windows để chứng minh toàn bộ, gồm render, hộp thoại hệ thống, cài đặt và cập nhật. |
@@ -46,7 +48,11 @@ STL nhị phân tổng hợp, AMD EPYC 9V74. Ba tiến trình cho mỗi kích th
 
 Mã chạy lại và kết quả từng lượt nằm trong tools/bvh-bench.
 
-## Kết quả CTest cuối
+## Kiểm thử hồi quy v1.0.1
+
+**8/8 nhóm đạt trên Linux x64 trong 155,55 giây.** WorkshopAudit chạy với các widget Qt thật ở chế độ offscreen và một tiến trình CAMWorker thật. Ca thử xác nhận đồng bộ chế độ và post theo hai chiều, nhận kết quả khi khóa cấu hình, giữ kết quả trước đó khi hủy và khôi phục chế độ khi mở lại. Chưa chạy Setup.exe và CTest trên Windows cho bản này.
+
+## Số liệu CTest và lõi hình học ghi nhận ở v1.0.0
 
 **8/8 nhóm đạt trên Linux trong 151,66 giây.** Hai nhóm kiểm toán hộp thoại và Workshop nằm trong cùng bộ CTest.
 

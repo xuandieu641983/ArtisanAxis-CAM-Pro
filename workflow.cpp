@@ -13,6 +13,7 @@
 #include <QRegularExpression>
 #include <QSignalBlocker>
 #include <QSpinBox>
+#include <QStandardItemModel>
 #include <QVBoxLayout>
 #include <algorithm>
 #include <cmath>
@@ -58,11 +59,29 @@ Workflow::Workflow() {
     preset(4);
 }
 void Workflow::invalidateAll(){ for(auto &p:paths_) ++p.revision; }
-QString Workflow::currentPost(int axes) const {return post_?post_(axes):QString();}
+QString Workflow::currentPost(int axes) const {
+    return post_ && axes>=4 && axes<=machineAxes_ ? post_(axes) : QString();
+}
+void Workflow::syncPathAxes() {
+    for(auto& path:paths_) {
+        const int axes=path.angle<0 ? axes_ : 4;
+        if(path.axis==axes)continue;
+        path.axis=axes;
+        ++path.revision;
+    }
+}
+bool Workflow::setAxes(int axes, bool manual) {
+    if(currentPost(axes).isEmpty())return false;
+    if(manual)manual_.insert("axes");
+    axes_=axes;
+    syncPathAxes();
+    return true;
+}
 void Workflow::setMachine(int count,std::function<QString(int)> post) {
     machineAxes_=count; post_=std::move(post);
     if(axes_>count) axes_=count;
-    for(auto &p:paths_) p.axis=std::min(p.axis,count);
+    if(currentPost(axes_).isEmpty()&&!currentPost(9-axes_).isEmpty())axes_=9-axes_;
+    syncPathAxes();
     invalidateAll();
 }
 void Workflow::setStock(double x,double y,double z,double r,double lift){
@@ -125,6 +144,8 @@ bool Workflow::editAI(QWidget *parent){
     auto *faces=f.choice("Phá mặt",{"2 mặt","4 mặt"},faces_==2?0:1);
     QStringList axisList={"4 trục"};if(machineAxes_>=5)axisList<<"5 trục";
     auto *axes=f.choice("Chế độ xoay",axisList,axes_==5?1:0);
+    auto* axisItems=qobject_cast<QStandardItemModel*>(axes->model());
+    for(int i=0;i<axes->count();++i)axisItems->item(i)->setEnabled(!currentPost(i+4).isEmpty());
     auto *rough=f.choice("Dao phá",toolNames().mid(0,3),rough_);
     auto *finish=f.choice("Dao tinh",toolNames().mid(3),finish_-3);
     auto lengths=tools_;
@@ -151,7 +172,7 @@ bool Workflow::editAI(QWidget *parent){
         applying=true;QStringList matched;
         auto take=[&](const QString& field,const QString& v){if(v.isEmpty()||locks.contains(field))return false;matched<<field;return true;};
         auto v=value(R"(([24])\s*mat)");if(take("faces",v))faces->setCurrentIndex(v=="2"?0:1);
-        v=value(R"(([45])\s*(?:truc|x\b))");if(take("axes",v)&&v.toInt()<=machineAxes_)axes->setCurrentIndex(v.toInt()-4);
+        v=value(R"(([45])\s*(?:truc|x\b))");if(!currentPost(v.toInt()).isEmpty()&&take("axes",v))axes->setCurrentIndex(v.toInt()-4);
         v=value(R"((?:dao\s*pha\s*(?:[øØd]\s*)?|[øØ]\s*)(12\.7|10|6)\b)");if(take("rough",v))rough->setCurrentIndex(v=="10"?1:v=="6"?2:0);
         v=value(R"((?:goc|con)\s*(10|15)\b)");if(take("finish",v))finish->setCurrentIndex(v=="15"?1:0);
         v=value(R"((?:dao\s*pha[^,;\n]{0,22}?\s+(?:dai|nho)|chieu dai dao pha)\s*([0-9]+(?:\.[0-9]+)?))");
@@ -169,8 +190,9 @@ bool Workflow::editAI(QWidget *parent){
     }
     manual_=locks;prompt_=prompt->toPlainText();
     int nextFaces=faces->currentIndex()==0?2:4;
-    const bool planChanged=nextFaces!=faces_||axes_!=axes->currentIndex()+4||rough_!=rough->currentIndex()||finish_!=finish->currentIndex()+3||finishStep_!=step->value()||semiAllowance_!=allow->value();
-    axes_=axes->currentIndex()+4;rough_=rough->currentIndex();finish_=finish->currentIndex()+3;
+    const bool planChanged=nextFaces!=faces_||rough_!=rough->currentIndex()||finish_!=finish->currentIndex()+3||finishStep_!=step->value()||semiAllowance_!=allow->value();
+    setAxes(axes->currentIndex()+4,false);
+    rough_=rough->currentIndex();finish_=finish->currentIndex()+3;
     semiAllowance_=allow->value();finishStep_=step->value();
     for(int i=0;i<lengths.size();++i)syncLength(i,lengths[i].overhang);
     if(planChanged) {
@@ -259,6 +281,8 @@ bool Workflow::restore(const QJsonObject& state){
     }
     tools_=std::move(restoredTools);paths_=std::move(restoredPaths);
     axes_=std::min(storedAxes,machineAxes_);faces_=storedFaces;rough_=rough;finish_=finish;
+    if(currentPost(axes_).isEmpty()&&!currentPost(9-axes_).isEmpty())axes_=9-axes_;
+    syncPathAxes();
     columns_=cols;stacks_=rows;semiAllowance_=semi;finishStep_=step;prompt_=state.value("prompt").toString();
     manual_.clear();
     for(auto lock:state.value("manual").toArray())if(lock.isString())manual_.insert(lock.toString());

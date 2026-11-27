@@ -2,6 +2,7 @@
 #include <QOpenGLContext>
 #include <QJsonArray>
 #include <QProcess>
+#include <QScopeGuard>
 #include <QJsonDocument>
 #include <cmath>
 #include <QStandardPaths>
@@ -19,7 +20,7 @@
 #include "stock.h"
 
 #ifndef ARTISAN_VERSION
-#define ARTISAN_VERSION "1.0.0"
+#define ARTISAN_VERSION "1.0.1"
 #endif
 
 class Workshop final : public QMainWindow {
@@ -29,6 +30,10 @@ class Workshop final : public QMainWindow {
     QLabel* summary=new QLabel;
     MachineProfiles machine{this};
     Workflow flow;
+    QComboBox* modeBox=new QComboBox;
+    QAction* cancelJob=nullptr;
+    QSet<QAction*> jobControls;
+    QList<QAction*> suspendedControls;
     Stock stock;
     QString modelFile,guideFile;
     QJsonArray stages,diagnostics,lifts;
@@ -108,6 +113,24 @@ class Workshop final : public QMainWindow {
     }
     bool updating=false;
     bool powerHeld=false;
+    bool jobBusy=false;
+    bool jobCancelled=false;
+    void setJobBusy(bool busy){
+        jobBusy=busy;
+        if(busy){
+            for(auto* control:jobControls){
+                if(!control->isEnabled())continue;
+                suspendedControls.append(control);
+                control->setEnabled(false);
+            }
+        }else{
+            for(auto* control:suspendedControls)control->setEnabled(true);
+            suspendedControls.clear();
+        }
+        tree->setEnabled(!busy);
+        cancelJob->setEnabled(busy);
+        keepAwake(busy);
+    }
     void keepAwake(bool active){
 #ifdef Q_OS_WIN
         if(active==powerHeld)return;
@@ -136,6 +159,15 @@ class Workshop final : public QMainWindow {
     void syncMachine(){flow.setMachine(machine.axisCount(),[this](int axes){return machine.postForAxes(axes);});syncStock();}
     void changed(){flow.invalidateAll();invalidateOutput();}
     void refresh(){
+        const QSignalBlocker block(modeBox);
+        auto* items=qobject_cast<QStandardItemModel*>(modeBox->model());
+        for(int i=0;i<modeBox->count();++i){
+            const auto post=flow.currentPost(modeBox->itemData(i).toInt());
+            items->item(i)->setEnabled(!post.isEmpty());
+            items->item(i)->setToolTip(post.isEmpty()?"Hồ sơ máy đang dùng thiếu post cho chế độ này.":"Post: "+post);
+        }
+        modeBox->setCurrentIndex(modeBox->findData(flow.axes()));
+        modeBox->setToolTip(modeBox->currentData(Qt::ToolTipRole).toString());
         tree->clear();
         auto branch=[&](QString label,QString key,QStringList children){
             auto* root=new QTreeWidgetItem(tree,{label});root->setData(0,Qt::UserRole,key);
@@ -149,6 +181,7 @@ class Workshop final : public QMainWindow {
         branch("Trợ lý CAM","ai",{});
     }
     void load(){
+        if(jobBusy)return;
         QString f=QFileDialog::getOpenFileName(this,"Mở mô hình STL",{},"STL (*.stl *.STL)");
         if(f.isEmpty())return;
         loading=true;const auto request=++loadRequest;
@@ -188,6 +221,7 @@ class Workshop final : public QMainWindow {
         }
     }
     void dialog(QString key,int index=0){
+        if(jobBusy)return;
         if(key=="model"){model();return;}
         if(key=="stock"){
             view->setSimStock({},{},{});stagesBox->setCurrentIndex(0);
@@ -206,15 +240,21 @@ class Workshop final : public QMainWindow {
         }
     }
     void launchJob(QString operation,QString file,QString extra={}){
+        if(jobBusy||updating)return;
         if(loading||file.isEmpty()){statusBar()->showMessage("Hãy nạp xong một STL trước khi tính.");return;}
-        if(worker.state()!=QProcess::NotRunning||updating)return;
+        if(operation=="plan-motion"&&flow.currentPost(flow.axes()).isEmpty()){
+            statusBar()->showMessage("Hãy chọn post tương thích trong Hồ sơ máy trước khi tính.");return;
+        }
         pendingJob=QJsonDocument(QJsonObject{{"operation",operation},{"file",file},
             {"machine",machine.current()},{"guideFile",guideFile},{"ncFile",extra},{"stock",stockJson()},{"workflow",flow.snapshot()},{"retract",radius(stock)+50},{"transformColumnMajor",modelTransform()}}).toJson(QJsonDocument::Compact)+"\n";
         jobRevision=revision;QString program=QCoreApplication::applicationDirPath()+"/CAMWorker";
 #ifdef Q_OS_WIN
         program+=".exe";
 #endif
-        worker.setProgram(program);worker.start();
+        jobCancelled=false;
+        worker.setProgram(program);
+        setJobBusy(true);
+        worker.start();
     }
     void exportNc(){
         if(worker.state()!=QProcess::NotRunning||loading||updating)return;
@@ -238,18 +278,42 @@ public:
         auto* dock=new QDockWidget("Dự án",this);tree->setHeaderHidden(true);dock->setWidget(tree);addDockWidget(Qt::LeftDockWidgetArea,dock);
         auto* bar=addToolBar("Xưởng");bar->setMovable(false);
         auto action=[&](QString name,auto fn){auto* a=bar->addAction(name);connect(a,&QAction::triggered,this,fn);return a;};
+        auto* modeLabel=new QLabel("Chế độ:");
+        modeLabel->setBuddy(modeBox);
+        bar->addWidget(modeLabel);
+        modeBox->setAccessibleName("Chế độ gia công");
+        modeBox->addItem("4 Trục đồng thời (XYZA)",4);
+        modeBox->addItem("5 Trục đồng thời (XYZAB)",5);
+        modeBox->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+        bar->addWidget(modeBox);
+        connect(modeBox,&QComboBox::currentIndexChanged,this,[this]{
+            int axes=modeBox->currentData().toInt();
+            if(axes==flow.axes())return;
+            if(jobBusy||!flow.setAxes(axes,true)){refresh();return;}
+            invalidateOutput();
+            statusBar()->showMessage("Đã chọn "+modeBox->currentText()+" · Post: "+flow.currentPost(axes));
+        });
+        action("Tính",[this]{launchJob("plan-motion",modelFile);});
+        cancelJob=action("Hủy tác vụ",[this]{
+            if(!jobBusy||jobCancelled)return;
+            jobCancelled=true;
+            cancelJob->setEnabled(false);
+            statusBar()->showMessage("Đang hủy tác vụ…");
+            worker.kill();
+        });
+        cancelJob->setEnabled(false);
+        bar->addSeparator();
         action("Mở STL",[this]{load();})->setShortcut(QKeySequence::Open);
         action("Biến đổi",[this]{model();});action("Lấy gốc X0",[this]{base();});
         action("Hoàn tác",[this]{if(!history.isEmpty()){view->setModelTransform(history.takeLast());changed();}})->setShortcut(QKeySequence::Undo);
         action("Phôi",[this]{dialog("stock");});action("Dao",[this]{dialog("tools");});action("Máy / Post",[this]{dialog("machine");});
         action("Trợ lý",[this]{dialog("ai");});action("2 mặt + tinh",[this]{flow.preset(2);invalidateOutput();});
-        action("4 mặt + tinh",[this]{flow.preset(4);invalidateOutput();});action("Tính 4X/5X",[this]{launchJob("plan-motion",modelFile);});
+        action("4 mặt + tinh",[this]{flow.preset(4);invalidateOutput();});
         action("Xuất NC",[this]{exportNc();});
         action("Đọc lại NC",[this]{
             auto file=QFileDialog::getOpenFileName(this,"Đọc NC xuất từ Mốc 3",{},"NC (*.nc *.tap)");
             if(!file.isEmpty())launchJob("verify-nc",modelFile,file);
         });
-        action("Hủy tác vụ",[this]{if(worker.state()!=QProcess::NotRunning){++revision;worker.kill();}});
         auto* cameras=addToolBar("Khung nhìn");
         for(QString key:{"iso","xy","yz","zx"})connect(cameras->addAction(key.toUpper()),&QAction::triggered,this,[this,key]{view->setCamera(key);});
         connect(cameras->addAction("Vừa khung"),&QAction::triggered,this,[this]{view->fit();});
@@ -363,13 +427,25 @@ public:
             QMessageBox::information(this,"Cập nhật","Bộ cập nhật dành cho gói cài Windows.");
 #endif
         });
+        for(auto* control:bar->actions())jobControls.insert(control);
+        for(auto* control:cameras->actions())jobControls.insert(control);
+        for(auto* control:menuBar()->findChildren<QAction*>())jobControls.insert(control);
+        jobControls.remove(cancelJob);
         connect(tree,&QTreeWidget::itemDoubleClicked,this,[this](QTreeWidgetItem* item,int){dialog(item->data(0,Qt::UserRole).toString(),item->data(0,Qt::UserRole+1).toInt());});
-        connect(&worker,&QProcess::stateChanged,this,[this](QProcess::ProcessState state){keepAwake(state!=QProcess::NotRunning);});
-        connect(&worker,&QProcess::started,this,[this]{worker.write(pendingJob);worker.closeWriteChannel();statusBar()->showMessage("CAMWorker đang xử lý…");});
-        connect(&worker,&QProcess::errorOccurred,this,[this](QProcess::ProcessError){statusBar()->showMessage(worker.errorString());});
+        connect(&worker,&QProcess::started,this,[this]{
+            if(jobCancelled){worker.kill();return;}
+            worker.write(pendingJob);worker.closeWriteChannel();statusBar()->showMessage("CAMWorker đang xử lý…");
+        });
+        connect(&worker,&QProcess::errorOccurred,this,[this](QProcess::ProcessError error){
+            if(error!=QProcess::FailedToStart)return;
+            setJobBusy(false);
+            statusBar()->showMessage(jobCancelled?"Đã hủy tác vụ.":worker.errorString());
+        });
         connect(&worker,&QProcess::finished,this,[this](int,QProcess::ExitStatus){
+            const auto unlock=qScopeGuard([this]{setJobBusy(false);});
             const auto result=QJsonDocument::fromJson(worker.readAllStandardOutput()).object();
-            if(jobRevision!=revision){statusBar()->showMessage("Tác vụ bị hủy hoặc cấu hình đã đổi.");return;}
+            if(jobCancelled){statusBar()->showMessage("Đã hủy tác vụ.");return;}
+            if(jobRevision!=revision){statusBar()->showMessage("Cấu hình đã đổi trong lúc tính.");return;}
             if(!result.value("ok").toBool()){
                 auto error=result.value("error").toString("Worker chưa trả về kết quả hợp lệ.");
                 statusBar()->showMessage(error);QMessageBox::warning(this,"CAMWorker",error);return;
@@ -405,7 +481,7 @@ public:
         restoreWorkspace();saveWorkspaceEnabled=true;
         if(!machine.loadWarning().isEmpty())statusBar()->showMessage(machine.loadWarning());
     }
-    ~Workshop(){if(!loading)saveWorkspace();if(worker.state()!=QProcess::NotRunning){worker.kill();worker.waitForFinished();}keepAwake(false);}
+    ~Workshop(){if(!loading)saveWorkspace();if(worker.state()!=QProcess::NotRunning){jobCancelled=true;worker.kill();worker.waitForFinished();}keepAwake(false);}
 };
 int main(int argc,char** argv){
     QSurfaceFormat format;format.setDepthBufferSize(24);format.setVersion(2,1);QSurfaceFormat::setDefaultFormat(format);

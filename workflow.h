@@ -10,6 +10,9 @@ class Workflow {
 public:
     Workflow();
     void setMachine(int axisCount, std::function<QString(int)> postForAxes);
+    int axes() const { return axes_; }
+    QString currentPost(int axes) const;
+    bool setAxes(int axes, bool manual);
     void setStock(double length,double width,double height,double cornerRadius,double retract);
     void preset(int faces);
     bool editTools(QWidget*);
@@ -35,5 +38,5 @@ private:
     std::function<QString(int)> post_;
     void syncLength(int,double);
     void updateReach();
-    QString currentPost(int) const;
+    void syncPathAxes();
 };

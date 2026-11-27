@@ -1,6 +1,8 @@
-# ArtisanAxis CAM Pro · v1.0.0
+# ArtisanAxis CAM Pro · v1.0.1
 
-Mã nguồn native C++20 / Qt 6. Chọn Máy/Post, phôi và dao, chọn 4X hoặc 5X trong Trợ lý rồi bấm **Tính 4X/5X**. CAMWorker trả đường dao, nhật ký và các trạng thái phôi sau mô phỏng.
+Mã nguồn native C++20 / Qt 6. Chọn Máy/Post, phôi và dao, chọn **4 Trục đồng thời (XYZA)** hoặc **5 Trục đồng thời (XYZAB)** ngay cạnh nút **Tính**. Trợ lý CAM và bộ xuất dùng cùng chế độ. Hồ sơ máy chỉ có một post tương thích sẽ chọn chế độ tương ứng.
+
+Trong lúc CAMWorker chạy, thanh công cụ, menu và cây dự án tạm khóa các thao tác. **Hủy tác vụ** dừng worker và giữ kết quả hợp lệ từ lần tính trước. Khi worker trả kết quả hoặc dừng, các thao tác được mở lại.
 
 ## Biên dịch
 

@@ -56,6 +56,49 @@ QAction* action(Workshop& workshop, const QString& label) {
 }
 
 struct WorkshopAudit {
+    static void checkMode(Workshop& workshop,int axes,const QString& post) {
+        const auto plan=workshop.flow.snapshot();
+        check(workshop.modeBox->currentData().toInt()==axes && plan["axes"].toInt()==axes &&
+              plan["post"].toString()==post, "toolbar, CAM plan and post agree");
+        for(auto item:plan["paths"].toArray()){
+            const auto path=item.toObject();
+            check(path["axes"].toInt()==(path["faceAngle"].toInt()<0?axes:4),
+                  "rotary passes follow mode and raster remains 4X");
+        }
+    }
+    static void checkWorkerLock(Workshop& workshop,const QString& fixture) {
+        const auto rev=workshop.revision;
+        const auto plan=workshop.flow.snapshot();
+        auto* open=action(workshop,"Mở STL");
+        auto* preset2=action(workshop,"2 mặt + tinh");
+        auto* preset4=action(workshop,"4 mặt + tinh");
+        auto* cancel=action(workshop,"Hủy tác vụ");
+        workshop.launchJob("wrap-stl",fixture);
+        check(workshop.jobBusy && cancel->isEnabled() && !workshop.modeBox->isEnabled() &&
+              !workshop.tree->isEnabled(), "worker locks editing and enables Cancel before processing");
+        for(auto* control:workshop.jobControls)
+            check(!control->isEnabled(), "worker suspends toolbar and menu actions");
+        open->trigger();preset2->trigger();preset4->trigger();
+        workshop.dialog("ai");
+        check(workshop.revision==rev && workshop.flow.snapshot()==plan,
+              "locked controls cannot invalidate the in-flight revision");
+        workshop.worker.waitForFinished(10000);
+        check(!workshop.jobBusy && !cancel->isEnabled() && workshop.modeBox->isEnabled() &&
+              open->isEnabled() && preset2->isEnabled() && preset4->isEnabled(),
+              "successful worker restores controls");
+        check(!workshop.surfaceOverlay.empty() && workshop.revision==rev,
+              "successful worker result reaches the viewport on the original revision");
+
+        const auto previousSurface=workshop.surfaceOverlay;
+        workshop.launchJob("wrap-stl",fixture);
+        cancel->trigger();
+        workshop.worker.waitForFinished(10000);
+        check(!workshop.jobBusy && !cancel->isEnabled() && open->isEnabled() &&
+              workshop.statusBar()->currentMessage()=="Đã hủy tác vụ.",
+              "user cancellation restores controls");
+        check(workshop.revision==rev && workshop.surfaceOverlay==previousSurface,
+              "cancellation preserves prior results and project revision");
+    }
     static void run(const QString& fixture) {
         QMatrix4x4 persisted;
         persisted.translate(3,4,5);
@@ -106,6 +149,36 @@ struct WorkshopAudit {
             check(workshop.flow.pathNames().size() == 6 && workshop.worker.state() == QProcess::NotRunning,
                   "four-face preset updates plan without calculating");
 
+            checkMode(workshop,4,"shanlong4");
+            workshop.modeBox->setCurrentIndex(workshop.modeBox->findData(5));
+            checkMode(workshop,5,"cm600");
+            check(!workshop.jobBusy, "changing toolbar mode does not calculate");
+            QTimer::singleShot(0, [&] {
+                auto* dialog=modal();
+                auto* axes=field<QComboBox>(dialog,"Chế độ xoay");
+                check(axes->currentIndex()==1 &&
+                      field<QLabel>(dialog,"Hồ sơ đang dùng")->text().contains("cm600"),
+                      "assistant opens with the toolbar mode and post");
+                axes->setCurrentIndex(0);
+                accept(dialog);
+            });
+            action(workshop,"Trợ lý")->trigger();
+            checkMode(workshop,4,"shanlong4");
+            check(!workshop.jobBusy, "saving assistant mode does not calculate");
+
+            check(workshop.machine.selectProfile("table-head"), "select 5X-only profile");
+            workshop.syncMachine();workshop.changed();
+            checkMode(workshop,5,"non-rtcp");
+            check(workshop.machine.selectProfile("table-x"), "select 4X-only profile");
+            workshop.syncMachine();workshop.changed();
+            checkMode(workshop,4,"mach3");
+            check(!qobject_cast<QStandardItemModel*>(workshop.modeBox->model())->item(1)->isEnabled(),
+                  "4X-only profile disables incompatible 5X");
+            check(workshop.machine.selectProfile("cm600"), "restore dual-mode profile");
+            workshop.syncMachine();workshop.changed();
+            workshop.modeBox->setCurrentIndex(workshop.modeBox->findData(5));
+            checkMode(workshop,5,"cm600");
+
             QTimer::singleShot(0, [&] {
                 auto* dialog = modal();
                 auto* grid = qobject_cast<QGridLayout*>(dialog->layout());
@@ -127,6 +200,7 @@ struct WorkshopAudit {
                   "one-click update action is present");
             check(action(workshop,"Nguồn thông báo Google Sheet…")->isEnabled(),
                   "update source configuration action is present");
+            checkWorkerLock(workshop,fixture);
             workshop.view->setModelTransform(persisted);
             workshop.saveWorkspace();
             check(QFileInfo::exists(workshop.workspacePath()), "workspace is saved outside installation");
@@ -146,6 +220,7 @@ struct WorkshopAudit {
         check(restored.stock.high().x()-restored.stock.low().x() == 212.25, "workspace restores stock dimensions");
         check(restored.flow.pathNames().size() == 6 && restored.worker.state() == QProcess::NotRunning,
               "workspace restores operations without calculating");
+        checkMode(restored,5,"cm600");
     }
 };
 
