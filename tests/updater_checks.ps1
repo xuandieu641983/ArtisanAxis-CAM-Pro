@@ -71,7 +71,14 @@ try {
     $feedPath = Join-Path $packages 'update-feed.json'
     [IO.File]::WriteAllText($versionFile, "1.2.0`n", $utf8)
     [IO.File]::WriteAllText($installer, "Fixture bytes", $utf8)
-    $fixtureHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+$stream = [System.IO.File]::OpenRead($installer)
+try {
+    $fixtureHash = ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToUpperInvariant()
+} finally {
+    $stream.Dispose()
+    $sha256.Dispose()
+}
     $fixtureDownload = 'https://github.com/shop/artisanaxis/releases/download/v1.3.0/Setup.exe'
 
     Save-Json $trusted @{githubRepository='shop/artisanaxis';publisherSignerSha1=''}
