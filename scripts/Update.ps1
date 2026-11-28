@@ -17,7 +17,16 @@ function Get-HttpsUri([string]$Text) {
     }
     $uri
 }
-
+function Get-Sha256Hex([string]$Path) {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = [System.IO.File]::OpenRead($Path)
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToUpperInvariant()
+    } finally {
+        $stream.Dispose()
+        $sha256.Dispose()
+    }
+}
 $stage = $null
 try {
     $config = Get-Content -Raw -Encoding UTF8 -LiteralPath (Join-Path $PSScriptRoot 'update-feed.json') | ConvertFrom-Json
@@ -136,7 +145,7 @@ try {
         throw 'Phien ban hoac SHA256 khong hop le.'
     }
     if (!$localSetup) { $url = Get-HttpsUri $download }
-    $installed = [version](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'version.txt') -TotalCount 1)
+   $installed = [version](Get-Content -LiteralPath (Join-Path $PSScriptRoot 'version.txt') -TotalCount 1)
     $version = [version]$versionText
     if ($version -le $installed) {
         @{ok=$true; available=$false} | ConvertTo-Json -Compress
@@ -145,7 +154,7 @@ try {
     $notes = $notes.Trim()
     if ($notes.Length -gt 12000) { $notes = $notes.Substring(0,12000) + ' ...' }
     if (!$Apply) {
-        if ($localSetup -and (Get-FileHash -LiteralPath $localSetup -Algorithm SHA256).Hash -ne $hash) {
+   if ($localSetup -and (Get-Sha256Hex $localSetup) -ne $hash) {
             throw 'SHA256 bo cai trong thu muc khong khop.'
         }
         @{ok=$true; available=$true; version=$versionText; notes=$notes; sha256=$hash} | ConvertTo-Json -Compress
@@ -168,7 +177,7 @@ try {
     } else {
         Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 300 -OutFile $setup
     }
-    if ((Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash -ne $hash) { throw 'SHA256 bo cai khong khop.' }
+ if ((Get-Sha256Hex $setup) -ne $hash) { throw 'SHA256 bo cai khong khop.' }
     if ($signer) {
         $sig = Get-AuthenticodeSignature -LiteralPath $setup
         if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Thumbprint -ne $signer) {
