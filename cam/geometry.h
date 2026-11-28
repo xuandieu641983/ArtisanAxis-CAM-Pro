@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <memory>
 #include <functional>
+#include <span>
 
 namespace cam {
 struct V {
@@ -31,10 +32,11 @@ public:
     double drop(double x,double y,double r,bool spherical) const;
     double height(double x,double y,double r)const{return drop(x,y,r,false);}
     bool spanClear(V tip,Span span,double tolerance=1e-7)const;
+    bool spansClear(V tip,std::span<const Span> spans,double tolerance=1e-7)const;
     double distance(V p) const;
     bool insideClosedMesh(V p) const;
     Bounds bounds()const;
-    std::vector<std::array<double,2>> section(double x)const;
+    std::vector<std::array<double,2>> section(double axial,bool axisY=false)const;
 private:
     struct Node { Bounds box; unsigned begin=0,end=0,left=0,right=0; };
     double angle_=0;
@@ -50,8 +52,11 @@ private:
 struct Wrap {
     unsigned around=0,along=0;
     std::vector<V> control;
-    static Wrap fit(const Tree&,unsigned around,unsigned along,double offset);
+    bool axisY=false;
+    V pivot{};
+    static Wrap fit(const Tree&,unsigned around,unsigned along,double offset,bool axisY=false,V pivot={});
     V eval(double u,double v,V* normal=nullptr)const;
+    double axialParameter(double axial)const;
 };
 }
 
@@ -81,6 +86,7 @@ struct PathSpec {
     int rpm=16000;
     bool reverse=false;
     int axes=0; // 0 inherits the machine/program mode.
+    double lead=0,lean=0;
 };
 struct Cut {V point;double angle;int tool;int pass;bool link=false;};
 struct Plan {std::vector<Cut> cuts; unsigned rejected=0; double safe;};

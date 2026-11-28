@@ -134,6 +134,13 @@ QString MachineProfiles::validate(const Obj& o) {
     }
     if(o.contains("workOffsetMachine")&&!o["workOffsetMachine"].isNull()&&!vector3(o["workOffsetMachine"]))
         return "workOffsetMachine cần [X,Y,Z] theo mm hoặc null.";
+    if(o.contains("headPivotFromTip")&&!o["headPivotFromTip"].isNull()){
+        if(n!=5||!vector3(o["headPivotFromTip"]))
+            return "headPivotFromTip cần vectơ [X,Y,Z] từ mũi dao đến tâm đầu B ở B=0, theo mm và có Z dương.";
+        const auto lever=vector(o["headPivotFromTip"]);
+        if(lever.z()<=0||std::hypot(lever.x(),lever.z())>100000||std::abs(lever.y())>100000)
+            return "headPivotFromTip yêu cầu Z dương và kích thước tay đòn hữu hạn trong giới hạn.";
+    }
     const Obj ref=o["referenceAxis"].toObject();
     if(!vector3(ref["origin"]) || !vector3(ref["direction"]) || !qFuzzyCompare(vector(ref["direction"]).length(),1.0f))
         return "Trục tham chiếu phôi cần tâm XYZ và vectơ đơn vị.";
@@ -277,7 +284,7 @@ bool MachineProfiles::edit(QWidget* parent) {
 
     auto* adv=new QWidget();
     auto* advancedLayout=new QVBoxLayout(adv);
-    auto* help=new QLabel("rotary ghi các khớp theo thứ tự động học tại tư thế 0, cùng hệ tọa độ với phôi. origin là tâm mm, direction là vectơ đơn vị, sign là +1/−1. limits khai báo [min,max] theo mm hoặc độ, null cho hành trình chưa đo. referenceAxis xác định hướng dọc phôi +X hoặc +Y. Tâm quay trong hệ máy chỉnh ở thẻ Hồ sơ và post. Thêm mẫu post tại customPosts rồi bấm Nạp danh sách post.");
+    auto* help=new QLabel("rotary ghi các khớp ở tư thế 0. origin là tâm mm, direction là vectơ đơn vị, sign là +1/−1. limits dùng [min,max] theo mm hoặc độ. headPivotFromTip tùy chọn là vectơ mm đã đo từ mũi dao đến tâm đầu B tại B=0, theo hệ Cartesian cục bộ, với X dọc trục A và Z hướng lên. Tâm bàn A chỉnh ở thẻ Hồ sơ và post. Thêm mẫu post tại customPosts rồi bấm Nạp danh sách post.");
     help->setWordWrap(true);
     advancedLayout->addWidget(help);
     auto* editor=new QPlainTextEdit();
@@ -321,9 +328,10 @@ bool MachineProfiles::edit(QWidget* parent) {
         const bool stored=values.size()==3;
         if(!stored&&o["id"].toString()=="cm600")values=Arr{264.607,455.104,-470.090};
         for(int i=0;i<3;++i){QSignalBlocker guard(workOffset[i]);workOffset[i]->setValue(values.size()==3?values[i].toDouble():0.);}
-        confirmed->setChecked(stored&&o["offsetConfirmed"].toBool(true));
+        confirmed->setChecked(stored&&o["offsetConfirmed"].toBool(false));
         setPosts(o,o["post4"].toString(),o["post5"].toString());
         for(const auto key:{"id","name","swingarmMm","post4","post5","controllerMode","rtcpRegister","rtcpMode","workOffsetMachine","offsetConfirmed"}) o.remove(key);
+        const QSignalBlocker guard(editor);
         editor->setPlainText(json(o));
     };
     auto parse=[&](Obj& o){
@@ -355,6 +363,8 @@ bool MachineProfiles::edit(QWidget* parent) {
     };
     for(const auto v:draft) selector->addItem(v.toObject()["name"].toString());
     selector->setCurrentIndex(index);load();
+    QObject::connect(editor,&QPlainTextEdit::textChanged,&dlg,[confirmed]{confirmed->setChecked(false);});
+    QObject::connect(arm,&QDoubleSpinBox::valueChanged,&dlg,[confirmed]{confirmed->setChecked(false);});
     QObject::connect(post5,&QComboBox::currentIndexChanged,&dlg,[&](){
         const Obj advanced=QJsonDocument::fromJson(editor->toPlainText().toUtf8()).object();
         auto mode=post5->isEnabled()?modeOf(advanced,post5->currentData().toString()):QString("off");

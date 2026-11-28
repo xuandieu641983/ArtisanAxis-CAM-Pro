@@ -127,9 +127,18 @@ int main(int argc,char **argv){
         confirmed->setChecked(true);
         field<QLineEdit>(d,"Tên máy")->setText("QA machine");
         field<QDoubleSpinBox>(d,"Tay đòn")->setValue(236.982);
+        check(!confirmed->isChecked(),"editing swingarm clears prior confirmation");
         auto* posts=field<QComboBox>(d,"Post 4 trục");posts->setCurrentIndex(posts->findData("mach3"));
         auto* tabs=d->findChild<QTabWidget*>();
         check(tabs && tabs->count()==3,"all machine tabs available");
+        auto* editor=tabs->widget(1)->findChild<QPlainTextEdit*>();
+        check(editor,"machine advanced fields available");
+        auto advanced=QJsonDocument::fromJson(editor->toPlainText().toUtf8()).object();
+        advanced["headPivotFromTip"]=QJsonArray{78.7,0,236.982};
+        confirmed->setChecked(true);
+        editor->setPlainText(QString::fromUtf8(QJsonDocument(advanced).toJson()));
+        check(!confirmed->isChecked(),"editing advanced kinematics clears prior confirmation");
+        confirmed->setChecked(true);
         auto* catalog=qobject_cast<QPlainTextEdit*>(tabs->widget(2));check(catalog&&catalog->isReadOnly()&&!catalog->toPlainText().isEmpty(),"post catalog is read-only reference");
         accept(d);
     });
@@ -137,6 +146,8 @@ int main(int argc,char **argv){
     const auto p=machines.current();
     check(p.value("name")=="QA machine"&&p.value("post4")=="mach3"&&std::abs(p.value("swingarmMm").toDouble()-236.982)<1e-12,"machine controls persisted in model");
     check(p.value("offsetConfirmed").toBool()&&p.value("workOffsetMachine").toArray()==QJsonArray{264.608,455.103,-470.089},"datum and confirmation persisted");
+    check(p.value("headPivotFromTip").toArray()==QJsonArray{78.7,0,236.982},
+          "Measured B head vector persisted");
     MachineProfiles restored(&parent);
     check(restored.current()==p,"machine profile reload round trip");
     check(flow.restore(snapshot),"workflow snapshot can be reopened");

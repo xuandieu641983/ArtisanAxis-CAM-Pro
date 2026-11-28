@@ -88,8 +88,9 @@ StockSim simulateStock(const StockSpec& stock,const Spiral& program,const Machin
         if(!std::isfinite(travel)||travel/h>100000)throw std::runtime_error("Stock simulation movement exceeds sample budget");
         int steps=std::max(1,int(std::ceil(travel/(h*.55))));
         bool warning=false;
+        const bool canCut=move.kind==MotionKind::Cut||move.kind==MotionKind::Approach;
         for(int step=1;step<=steps;++step)
-            warning|=update(controllerPose(previous.pose,move.pose,double(step)/steps,machine),tool,move.kind!=MotionKind::Rapid);
+            warning|=update(controllerPose(previous.pose,move.pose,double(step)/steps,machine),tool,canCut);
         output.stockWarnings+=warning;
         if(warning)output.warningMoves.push_back(move.sourceLine?move.sourceLine:unsigned(i));
     }

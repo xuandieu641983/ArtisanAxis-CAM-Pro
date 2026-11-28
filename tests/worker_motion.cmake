@@ -2,9 +2,9 @@ cmake_minimum_required(VERSION 3.22)
 set(spec [=[
 "file":"@SOURCE@/tests/spiral_cylinder.stl",
 "transformColumnMajor":[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],
-"machine":{"workOffsetMachine":[0,0,-100],"limits":{"Z":[-450,200]},"rotary":[{"direction":[1,0,0],"origin":[0,0,0],"sign":1,"role":"table"}]},
+"machine":{"workOffsetMachine":[0,0,-100],"offsetConfirmed":true,"limits":{"Z":[-450,200]},"rotary":[{"direction":[1,0,0],"origin":[0,0,0],"sign":1,"role":"table"}]},
 "stock":{"shape":"cylinder","min":[0,-6.2,-6.2],"max":[19,6.2,6.2]},
-"retract":56.2,
+"retract":50,
 "workflow":{"axes":4,"post":"shanlong4","faces":2,
 "tools":[{"tipRadius":1,"diameter":2,"flute":12,"overhang":18,"holderDiameter":5}],
 "paths":[{"active":true,"toolIndex":0,"faceAngle":-1,"step":3,"allowance":0,"feed":730,"rpm":12300}]}
@@ -33,11 +33,15 @@ run("{\"operation\":\"plan-motion\",\"ncOutput\":\"${nc}\",${cfg}}")
 string(JSON onDisk GET "${resultJson}" ncOnDisk)
 string(JSON frames LENGTH "${resultJson}" playback)
 string(JSON seconds GET "${resultJson}" seconds)
+string(JSON safePlane GET "${resultJson}" safePlane)
 file(READ "${nc}" program LIMIT 4096)
 string(JSON blocks GET "${resultJson}" blocks)
 string(JSON stages LENGTH "${resultJson}" stages)
 if(NOT program MATCHES "S12300 M3" OR NOT program MATCHES "F730" OR NOT onDisk OR NOT stages EQUAL 1 OR NOT frames GREATER 10 OR NOT seconds GREATER 0)
     message(FATAL_ERROR "Expected verified NC and one finish snapshot")
+endif()
+if(NOT safePlane EQUAL 56.2 OR NOT program MATCHES "G00 Z56[.]202\nG00 X")
+    message(FATAL_ERROR "Expected stock-derived clearance and vertical retract before XYZA")
 endif()
 run("{\"operation\":\"verify-nc\",\"ncFile\":\"${nc}\",${cfg}}")
 string(JSON readBack GET "${resultJson}" blocks)
@@ -46,3 +50,12 @@ if(NOT readBack EQUAL blocks)
 endif()
 message(STATUS "${readBack} simultaneous blocks verified directly from saved NC")
 file(REMOVE "${job}" "${nc}")
+
+string(REPLACE [=["offsetConfirmed":true]=] [=["offsetConfirmed":false]=] unconfirmed "${cfg}")
+run("{\"operation\":\"plan-motion\",\"ncOutput\":\"${nc}\",${unconfirmed}}")
+string(JSON calibrated GET "${resultJson}" calibratedOffset)
+string(JSON wrote GET "${resultJson}" ncOnDisk)
+if(calibrated OR wrote OR EXISTS "${nc}")
+    message(FATAL_ERROR "An unconfirmed machine offset must allow review only")
+endif()
+file(REMOVE "${job}")

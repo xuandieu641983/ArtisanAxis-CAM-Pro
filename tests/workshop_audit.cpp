@@ -201,6 +201,32 @@ struct WorkshopAudit {
                   "one-click update action is present");
             check(action(workshop,"Nguồn thông báo Google Sheet…")->isEnabled(),
                   "update source configuration action is present");
+            QTimer::singleShot(0,[&]{
+                auto* dialog=modal();
+                auto* source=dialog->findChild<QComboBox*>("updateSource");
+                auto* address=dialog->findChild<QLineEdit*>("updateSourceValue");
+                auto* autoCheck=dialog->findChild<QCheckBox*>("updateAutoCheck");
+                auto* backup=dialog->findChild<QCheckBox*>("updateKeepBackup");
+                check(source&&address&&autoCheck&&backup&&source->findData("local")>=0,
+                      "updater exposes sources, startup check and backup options");
+                source->setCurrentIndex(source->findData("manifest"));
+                address->setText("https://updates.example.invalid/update-feed.json");
+                autoCheck->setChecked(false);
+                backup->setChecked(true);
+                dialog->findChild<QDialogButtonBox*>()->button(QDialogButtonBox::Save)->click();
+            });
+            action(workshop,"Cấu hình Cập nhật…")->trigger();
+            const auto configDirectory=QDir(QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation))
+                .filePath(QCoreApplication::organizationName()+"/"+QCoreApplication::applicationName());
+            QFile updateConfig(configDirectory+"/update_config.json");
+            check(updateConfig.open(QIODevice::ReadOnly),"updater saves user configuration outside the install");
+            const auto savedUpdate=QJsonDocument::fromJson(updateConfig.readAll()).object();
+            updateConfig.close();
+            check(savedUpdate.value("source").toString()=="manifest"&&
+                  savedUpdate.value("value").toString()=="https://updates.example.invalid/update-feed.json"&&
+                  !savedUpdate.value("autoCheck").toBool()&&savedUpdate.value("keepBackup").toBool(),
+                  "updater settings round-trip with auto-check disabled and backup retained");
+
             auto* row=workshop.tree->topLevelItem(4)->child(0);
             check(row->checkState(0)==Qt::Checked,"project path has direct checkbox");
             row->setCheckState(0,Qt::Unchecked);
@@ -227,6 +253,15 @@ struct WorkshopAudit {
             workshop.flow.setPathActive(0,true);
             workshop.refresh();
             checkWorkerLock(workshop,fixture);
+            auto* surface=workshop.tree->topLevelItem(3);
+            check(surface->text(0)=="Mặt dẫn"&&surface->text(1)=="Lớp bọc STL"&&
+                  surface->checkState(0)==Qt::Checked,"Dựng STL exposes the guide in the project tree");
+            const auto guideRevision=workshop.revision;
+            surface->setCheckState(0,Qt::Unchecked);
+            check(!workshop.surfaceVisible&&!workshop.surfaceOverlay.empty()&&workshop.revision==guideRevision&&!workshop.jobBusy,
+                  "hiding the guide preserves mesh, jobs and computed toolpaths");
+            surface->setCheckState(0,Qt::Checked);
+            check(workshop.surfaceVisible,"re-enabling guide restores visualization");
             workshop.view->setModelTransform(persisted);
             workshop.saveWorkspace();
             check(QFileInfo::exists(workshop.workspacePath()), "workspace is saved outside installation");

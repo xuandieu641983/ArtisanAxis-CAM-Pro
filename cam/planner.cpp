@@ -6,6 +6,7 @@
 #include <atomic>
 #include <numbers>
 #include <stdexcept>
+#include <limits>
 
 namespace cam {
 namespace {
@@ -19,6 +20,7 @@ class Residual {
     std::vector<std::vector<Cell>> columns_;
     double pitch_,first_;
     bool axisY_;
+    std::vector<std::vector<V>> framed_;
 public:
     double half;
     explicit Residual(const StockSpec& s):axisY_(s.axisY){
@@ -42,41 +44,52 @@ public:
             columns_[axisY_?j:i].push_back({p,true});
         }
     }
+    void setFrame(double angle,V pivot){
+        framed_.resize(columns_.size());
+        for(size_t i=0;i<columns_.size();++i){
+            auto& framed=framed_[i];
+            framed.resize(columns_[i].size());
+            for(size_t j=0;j<framed.size();++j)framed[j]=face(columns_[i][j].p,angle,axisY_,pivot);
+        }
+    }
     template<class F>
-    void visit(V tip,double angle,V pivot,double radius,F callback){
+    void visit(V tip,V pivot,double radius,F callback){
         const double axial=tip.x+component(pivot,axisY_);
         int lo=std::max(0,int(std::floor((axial-radius-half-first_)/pitch_)));
         int hi=std::min(int(columns_.size())-1,int(std::ceil((axial+radius+half-first_)/pitch_)));
-        for(int i=lo;i<=hi;++i)for(auto& c:columns_[i]){
+        const double radiusSquared=radius*radius;
+        for(int i=lo;i<=hi;++i)for(size_t j=0;j<columns_[i].size();++j){
+            auto& c=columns_[i][j];
             if(!c.solid)continue;
-            V p=face(c.p,angle,axisY_,pivot);
-            if(std::hypot(std::max(0.,std::abs(p.x-tip.x)-half),std::max(0.,std::abs(p.y-tip.y)-half*1.415))>radius)continue;
-            callback(p,c);
+            V p=framed_[i][j];
+            if(sq(std::max(0.,std::abs(p.x-tip.x)-half))+sq(std::max(0.,std::abs(p.y-tip.y)-half*1.415))>radiusSquared)continue;
+            if(!callback(p,c))return;
         }
     }
-    double top(V tip,double angle,V pivot,double radius){
+    double top(V tip,V pivot,double radius){
         double z=-inf;
-        visit(tip,angle,pivot,radius,[&](V p,const Cell&){z=std::max(z,p.z+half*1.415);});
+        visit(tip,pivot,radius,[&](V p,const Cell&){z=std::max(z,p.z+half*1.415);return true;});
         return z;
     }
-    bool clear(V tip,double angle,V pivot,Span span){
+    bool clear(V tip,V pivot,Span span){
         if(span.high<=span.low)return true;
         bool ok=true;
-        visit(tip,angle,pivot,span.radius,[&](V p,const Cell&){
-            double pad=half*1.415;
-            if(p.z+pad>=tip.z+span.low)ok=false;
+        visit(tip,pivot,span.radius,[&](V p,const Cell&){
+            ok=p.z+half*1.415<tip.z+span.low;
+            return ok;
         });
         return ok;
     }
-    void remove(V tip,double angle,V pivot,const Cutter& tool){
+    void remove(V tip,V pivot,const Cutter& tool){
         const double radius=tool.ball>0?tool.ball:tool.diameter/2;
         // Only discard cells fully contained in the cutting volume swept during
         // the vertical plunge. Partial cells remain obstacles for later passes.
-        visit(tip,angle,pivot,radius,[&](V p,Cell& cell){
+        visit(tip,pivot,radius,[&](V p,Cell& cell){
             const double reach=radialBox(p,tip,half*1.415);
-            if(reach>=radius)return;
+            if(reach>=radius)return true;
             const double surface=tool.ball>0?tool.ball-std::sqrt(std::max(0.,sq(tool.ball)-sq(reach))):0.;
             if(p.z-half*1.415>tip.z+surface)cell.solid=false;
+            return true;
         });
     }
 };
@@ -97,7 +110,10 @@ double DistanceGrid::lowerBound(V p)const{
     auto q=(p-box.lo)*(1/pitch);
     if(q.x<0||q.y<0||q.z<0||q.x>size[0]-1||q.y>size[1]-1||q.z>size[2]-1)return 0;
     int x=int(std::round(q.x)),y=int(std::round(q.y)),z=int(std::round(q.z));
-    const auto d=std::abs(samples[(size_t(z)*size[1]+y)*size[0]+x]);
+    // This is a lower bound on the distance to solid material. An interior
+    // signed sample must never certify clearance merely because its
+    // distance to the nearest boundary is large.
+    const auto d=samples[(size_t(z)*size[1]+y)*size[0]+x];
     auto delta=p-(box.lo+V{x*pitch,y*pitch,z*pitch});
     return std::max(0.,double(d)-std::sqrt(dot(delta,delta))-std::max(1.,double(d))*2e-7);
 }
@@ -168,74 +184,128 @@ Plan generate(const std::vector<Tri>& mesh,const StockSpec& stock,const std::vec
             double angle=p.angle>=0?p.angle:roundMm(double(k)*360/angles);
             auto box=localStock(angle);
             model.setFrame(angle,stock.axisY,pivot);
+            residual.setFrame(angle,pivot);
             const double tipRadius=tool.ball>0?tool.ball:tool.diameter*.5;
             const auto spans=tool.spans();
             const int lengthSteps=std::max(1,int(std::ceil((localHigh-localLow)/(p.pointSpacing>0?p.pointSpacing:p.step))));
             const int widthSteps=p.angle<0?0:std::max(1,int(std::ceil((box.hi.y-box.lo.y)/p.step)));
             const double bottom=std::max({twoFace?-1.:1.,box.hi.z-tool.overhang+1.,p.minZ});
             if(size_t(lengthSteps+1)*size_t(widthSteps+1)>1'500'000)throw std::runtime_error("Bước dịch tạo quá nhiều điểm cho một mặt.");
+            const double stepDown=std::min(p.stepDown>0?p.stepDown:2.,tool.flute*.3);
+            auto contact=[&](const Tree& tree,int j,int i){
+                const double y=p.angle<0?0.:box.lo.y+(box.hi.y-box.lo.y)*j/widthSteps;
+                const double x=localLow+(localHigh-localLow)*((bool(j%2)!=p.reverse)?lengthSteps-i:i)/lengthSteps;
+                auto quantized=world({x,y,0},0,stock.axisY,pivot);
+                quantized.x=roundMm(quantized.x);
+                quantized.y=roundMm(quantized.y);
+                const auto query=face(quantized,0,stock.axisY,pivot);
+                const double queryY=p.angle<0?0.:query.y;
+                const double drop=tree.drop(query.x,queryY,tipRadius,tool.ball>0);
+                if(p.angle<0&&!std::isfinite(drop))return V{query.x,queryY,inf};
+                const double allowed=p.allowance>0?
+                    tree.drop(query.x,queryY,tipRadius+p.allowance,tool.ball>0)+p.allowance:drop;
+                double z=std::max(allowed,drop)+.002;
+                if(p.angle>=0)z=std::max(z,bottom);
+                return V{query.x,queryY,z};
+            };
+            auto clear=[&](V q){
+                if(tool.ball>0&&tool.halfAngle>0){
+                    constexpr int bands=12;
+                    for(int band=0;band<bands;++band){
+                        double a=tool.ball*std::cos(tool.halfAngle*std::numbers::pi/180.);
+                        double r0=a+(tool.diameter*.5-a)*band/bands;
+                        double r1=a+(tool.diameter*.5-a)*(band+1)/bands;
+                        double low=tool.profileHeight(r0);
+                        if(low<tool.flute&&!model.spanClear(q,{low,tool.flute,r1}))return false;
+                    }
+                    const double top=tool.profileHeight(tool.diameter*.5);
+                    if(top<tool.flute&&!model.spanClear(q,{top,tool.flute,tool.diameter*.5}))return false;
+                }else if(tool.ball>0&&tool.ball<tool.flute&&
+                         !model.spanClear(q,{tool.ball,tool.flute,tool.diameter*.5}))return false;
+                return model.spanClear(q,spans[2])&&model.spanClear(q,spans[3])&&
+                       residual.clear(q,pivot,spans[2])&&residual.clear(q,pivot,spans[3]);
+            };
+            auto emit=[&](V point){
+                if(!clear(point)){++plan.rejected;return false;}
+                bool link=false;
+                if(tool.ball==0&&!plan.cuts.empty()){
+                    const auto& prev=plan.cuts.back();
+                    const auto delta=point-prev.point, middle=(point+prev.point)*.5;
+                    const double gap=std::hypot(delta.x,delta.y);
+                    if(prev.pass==int(pass)&&prev.angle==angle&&std::abs(delta.z)<1e-10&&gap<=p.step*1.001&&std::abs(delta.y)<1e-10){
+                        const Span shank{spans[2].low,spans[2].high,spans[2].radius+gap*.5};
+                        const Span holder{spans[3].low,spans[3].high,spans[3].radius+gap*.5};
+                        // Enclose the swept footprint in a disk at the middle
+                        // of the segment, or retract when the proof fails.
+                        link=model.height(middle.x,middle.y,tipRadius+gap*.5)<middle.z-.0015&&
+                             model.spanClear(middle,shank,.0015)&&model.spanClear(middle,holder,.0015)&&
+                             residual.clear(middle,pivot,shank)&&residual.clear(middle,pivot,holder);
+                    }
+                }
+                plan.cuts.push_back({point,angle,p.tool,int(pass),link});
+                residual.remove(point,pivot,tool);
+                return true;
+            };
+            if(p.angle>=0&&!twoFace){
+                // Evaluate the STL once at every XY station. At each common Z
+                // level cut only stations where the expanded model envelope
+                // permits that entire cutter footprint.
+                const size_t columns=size_t(lengthSteps)+1, rows=size_t(widthSteps)+1;
+                std::vector<V> envelope(columns*rows);
+                std::atomic_size_t nextRow{0};
+                auto calculate=[&]{
+                    const Tree query=model;
+                    for(size_t row;(row=nextRow.fetch_add(1,std::memory_order_relaxed))<rows;)
+                        for(size_t col=0;col<columns;++col)envelope[row*columns+col]=contact(query,int(row),int(col));
+                };
+                {
+                    std::vector<std::jthread> workers;
+                    const auto count=std::min<size_t>(std::max(1u,std::thread::hardware_concurrency()),(envelope.size()+255)/256);
+                    for(size_t thread=1;thread<count;++thread)workers.emplace_back(calculate);
+                    calculate();
+                }
+                const double top=box.hi.z;
+                if(top<=bottom||p.maxZ<bottom)continue;
+                // Equalize the layers so they end at the allowed floor.
+                // The requested stepdown is a strict upper bound.
+                const double levelCount=std::floor((top-bottom)/stepDown)+1;
+                if(levelCount>1'000'000 || levelCount*double(envelope.size())>150'000'000)
+                    throw std::runtime_error("Chia lớp Z tạo quá nhiều điểm cho một mặt.");
+                const auto levels=size_t(levelCount);
+                if(progress)progress(pass,0,levels);
+                for(size_t layer=1;layer<=levels;++layer){
+                    const double level=layer==levels?bottom:std::lerp(top,bottom,double(layer)/levels);
+                    if(level<=p.maxZ){
+                        for(const auto& floor:envelope){
+                            if(!std::isfinite(floor.z)||floor.z>level+1e-9)continue;
+                            const V point{floor.x,floor.y,level};
+                            const auto occupiedTop=residual.top(point,pivot,tipRadius);
+                            if(occupiedTop<=level)continue;
+                            // A Z cap cannot request an abrupt deep entry into
+                            // intact stock above the first allowed plane.
+                            if(p.maxZ<top-stepDown&&occupiedTop>level+stepDown+residual.half*2){
+                                ++plan.rejected;continue;
+                            }
+                            emit(point);
+                        }
+                    }
+                    if(progress)progress(pass,layer,levels);
+                }
+                continue;
+            }
             if(progress)progress(pass,0,size_t(widthSteps)+1);
             for(int j=0;j<=widthSteps;++j){
-                if(progress&&(j%4==0||j==widthSteps))progress(pass,size_t(j)+1,size_t(widthSteps)+1);
-                double y=p.angle<0?0.:box.lo.y+(box.hi.y-box.lo.y)*j/widthSteps;
                 for(int i=0;i<=lengthSteps;++i){
-                    double x=localLow+(localHigh-localLow)*((bool(j%2)!=p.reverse)?lengthSteps-i:i)/lengthSteps;
-                    auto quantized=world({x,y,0},0,stock.axisY,pivot);
-                    quantized.x=roundMm(quantized.x);
-                    quantized.y=roundMm(quantized.y);
-                    auto query=face(quantized,0,stock.axisY,pivot);
-                    x=query.x;const double queryY=p.angle<0?0.:query.y;
-                    const double drop=model.drop(x,queryY,tipRadius,tool.ball>0);
-                    if(p.angle<0&&!std::isfinite(drop))continue;
-                    // Expand the footprint and add axial allowance conservatively.
-                    const double allowed=p.allowance>0?
-                        model.drop(x,queryY,tipRadius+p.allowance,tool.ball>0)+p.allowance:drop;
-                    double z=std::max(allowed,drop)+.002;
-                    if(p.angle>=0)z=std::max(z,bottom);
+                    V point=contact(model,j,i);
+                    const double z=point.z;
                     if(!std::isfinite(z)||z>p.maxZ||z>=box.hi.z-.001)continue;
-                    V point{x,queryY,z};
-                    auto clear=[&](V q){
-                        if(tool.ball>0&&tool.halfAngle>0){
-                            // Cone/flute envelope as coaxial conservative rings.
-                            constexpr int bands=12;
-                            for(int band=0;band<bands;++band){
-                                double a=tool.ball*std::cos(tool.halfAngle*std::numbers::pi/180.);
-                                double r0=a+(tool.diameter*.5-a)*band/bands;
-                                double r1=a+(tool.diameter*.5-a)*(band+1)/bands;
-                                double low=tool.profileHeight(r0);
-                                if(low<tool.flute&&!model.spanClear(q,{low,tool.flute,r1}))return false;
-                            }
-                            const double top=tool.profileHeight(tool.diameter*.5);
-                            if(top<tool.flute&&!model.spanClear(q,{top,tool.flute,tool.diameter*.5}))return false;
-                        }else if(tool.ball>0&&tool.ball<tool.flute&&
-                                 !model.spanClear(q,{tool.ball,tool.flute,tool.diameter*.5}))return false;
-                        return model.spanClear(q,spans[2])&&model.spanClear(q,spans[3])&&
-                               residual.clear(q,angle,pivot,spans[2])&&residual.clear(q,angle,pivot,spans[3]);
-                    };
-                    double level=std::max(z,std::min(std::min(p.maxZ,box.hi.z),residual.top(point,angle,pivot,tool.diameter*.5)));
+                    double level=std::max(z,std::min(std::min(p.maxZ,box.hi.z),residual.top(point,pivot,tool.diameter*.5)));
                     do {
-                        level=std::max(z,level-std::min(p.stepDown>0?p.stepDown:2.,tool.flute*.3));point.z=level;
-                        if(!clear(point)){++plan.rejected;break;}
-                        bool link=false;
-                        if(tool.ball==0&&!plan.cuts.empty()){
-                            const auto& prev=plan.cuts.back();
-                            const auto delta=point-prev.point, middle=(point+prev.point)*.5;
-                            const double gap=std::hypot(delta.x,delta.y);
-                            if(prev.pass==int(pass)&&prev.angle==angle&&std::abs(delta.z)<1e-10&&gap<=p.step*1.001&&std::abs(delta.y)<1e-10){
-                                const Span shank{spans[2].low,spans[2].high,spans[2].radius+gap*.5};
-                                const Span holder{spans[3].low,spans[3].high,spans[3].radius+gap*.5};
-                                // Enclose the swept footprint on this level by a
-                                // disk at its midpoint. Fall back to retract if
-                                // that conservative enclosure touches material.
-                                link=model.height(middle.x,middle.y,tipRadius+gap*.5)<middle.z-.0015&&
-                                     model.spanClear(middle,shank,.0015)&&model.spanClear(middle,holder,.0015)&&
-                                     residual.clear(middle,angle,pivot,shank)&&residual.clear(middle,angle,pivot,holder);
-                            }
-                        }
-                        plan.cuts.push_back({point,angle,p.tool,int(pass),link});
-                        residual.remove(point,angle,pivot,tool);
+                        level=std::max(z,level-stepDown);point.z=level;
+                        if(!emit(point))break;
                     }while(level>z+1e-8);
                 }
+                if(progress&&(j%4==0||j==widthSteps))progress(pass,size_t(j)+1,size_t(widthSteps)+1);
             }
         }
     }

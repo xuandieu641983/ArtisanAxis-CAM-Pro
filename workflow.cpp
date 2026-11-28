@@ -110,8 +110,12 @@ void Workflow::updateReach() {
 void Workflow::preset(int faces) {
     faces_=faces==2?2:4;paths_.clear();
     const int orders[]={0,180,90,270};
-    for(int i=0;i<faces_;++i) paths_.append({"Phá mặt "+QString::number(orders[i])+"°",4,rough_,double(orders[i]),3.,2.,0.});
+    for(int i=0;i<faces_;++i){
+        paths_.append({"Phá mặt "+QString::number(orders[i])+"°",4,rough_,double(orders[i]),3.,2.,0.});
+        paths_.last().feed=450;
+    }
     paths_.append({"Phá tròn cận tinh",axes_,rough_,-1,2.5,semiAllowance_,0});
+    paths_.last().feed=550;
     paths_.append({"Chạy tinh",axes_,finish_,-1,finishStep_,0,0});
     updateReach();
 }
@@ -395,10 +399,19 @@ bool Workflow::editPath(QWidget *parent,int index,bool* calculate){
     auto *rpm=f.number("Tốc độ trục chính (RPM)",draft.rpm,1,60000,0);
     auto *b0=f.number("Góc B Min (°)",draft.bMin,-60,0);
     auto *b1=f.number("Góc B Max (°)",draft.bMax,0,60);
+    auto *lead=f.number("Nghiêng theo hướng chạy · Lead (°)",draft.lead,-60,60);
+    auto *lean=f.number("Nghiêng ngang · Lean (°)",draft.lean,-60,60);
+    lead->setToolTip("Dấu dương nghiêng theo tiếp tuyến đường chạy.");
+    lean->setToolTip("Dấu dương nghiêng sang phía pháp tuyến × tiếp tuyến. Máy thực hiện bằng cặp A/B trong giới hạn cho phép.");
     auto *dir=f.choice("Hướng chạy X",{"Đáy → Đỉnh","Đỉnh → Đáy"},draft.reverse);
     auto *lo=f.number("Clipping đầu trục (mm)",draft.clipMin,-1e6,1e6);
     auto *hi=f.number("Clipping cuối trục (mm)",draft.clipMax,-1e6,1e6);
-    auto updateStrategy=[&]{angle->setEnabled(strategy->currentIndex()==0);down->setEnabled(angle->isEnabled());b0->setEnabled(strategy->currentIndex()==2);b1->setEnabled(b0->isEnabled());};
+    auto updateStrategy=[&]{
+        angle->setEnabled(strategy->currentIndex()==0);
+        down->setEnabled(angle->isEnabled());
+        const bool simultaneous=strategy->currentIndex()==2;
+        for(auto* control:{b0,b1,lead,lean})control->setEnabled(simultaneous);
+    };
     QObject::connect(strategy,&QComboBox::currentIndexChanged,&f.d,updateStrategy);updateStrategy();
     f.fields->addRow("Nhấc đầu/cuối tối thiểu",new QLabel(QString::number(corner_+safeClearance_,'f',3)+" mm"));
     bool run=false;
@@ -421,6 +434,7 @@ bool Workflow::editPath(QWidget *parent,int index,bool* calculate){
     draft.stepDown=down->value();draft.pointSpacing=density->value();
     draft.zMin=z0->value();draft.zMax=z1->value();draft.feed=feed->value();draft.rpm=int(rpm->value());
     draft.bMin=b0->value();draft.bMax=b1->value();draft.reverse=dir->currentIndex()==1;
+    draft.lead=lead->value();draft.lean=lean->value();
     draft.clipMin=lo->value();draft.clipMax=hi->value();
     ++draft.revision;paths_[index]=draft;
     if(draft.axis==5&&axes_==4)axes_=5;
@@ -433,7 +447,7 @@ QJsonObject Workflow::snapshot()const{
     for(const auto&t:tools_)tools.append(QJsonObject{{"name",t.name},{"diameter",t.diameter},{"tipRadius",t.radius},{"singleSideHalfAngle",t.angle},{"overhang",t.overhang},{"outLen",t.outLen},{"flute",t.flute},{"holderDiameter",t.holderDiameter}});
     for(const auto&p:paths_)paths.append(QJsonObject{{"name",p.name},{"axes",p.axis},{"toolIndex",p.tool},{"faceAngle",p.angle},{"step",p.step},{"allowance",p.allowance},{"active",p.active},{"revision",double(p.revision)},{"minZ",p.minZ},{"minimumRetract",corner_+safeClearance_},{"manualStep",p.manualStep},{"manualAllowance",p.manualAllowance},
         {"pointSpacing",p.pointSpacing},{"stepDown",p.stepDown},{"zMin",p.zMin},{"zMax",p.zMax},
-        {"clipMin",p.clipMin},{"clipMax",p.clipMax},{"bMin",p.bMin},{"bMax",p.bMax},{"feed",p.feed},{"rpm",p.rpm},{"reverse",p.reverse}});
+        {"clipMin",p.clipMin},{"clipMax",p.clipMax},{"bMin",p.bMin},{"bMax",p.bMax},{"lead",p.lead},{"lean",p.lean},{"feed",p.feed},{"rpm",p.rpm},{"reverse",p.reverse}});
     QJsonArray locks;
     for(const auto& field:manual_)locks.append(field);
     return {{"faces",faces_},{"axes",axes_},{"post",currentPost(axes_)},{"tools",tools},{"paths",paths},
@@ -479,6 +493,8 @@ bool Workflow::restore(const QJsonObject& state){
         p.zMin=o["zMin"].toDouble(-1e6);p.zMax=o["zMax"].toDouble(1e6);
         p.clipMin=o["clipMin"].toDouble(-1e6);p.clipMax=o["clipMax"].toDouble(1e6);
         p.bMin=o["bMin"].toDouble(-20);p.bMax=o["bMax"].toDouble(20);
+        p.lead=o["lead"].toDouble();p.lean=o["lean"].toDouble();
+        if(std::abs(p.lead)>60||std::abs(p.lean)>60)return false;
         p.feed=o["feed"].toDouble(600);p.rpm=o["rpm"].toInt(16000);p.reverse=o["reverse"].toBool();
         restoredPaths.append(p);
     }

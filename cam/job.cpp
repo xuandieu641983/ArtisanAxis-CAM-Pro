@@ -22,6 +22,37 @@ V point(const QJsonValue& v){
     return {a[0].toDouble(),a[1].toDouble(),a[2].toDouble()};
 }
 QJsonArray json(V p){return {p.x,p.y,p.z};}
+double stockRadius(const StockSpec& stock,V pivot){
+    const auto center=face((stock.bounds.lo+stock.bounds.hi)*.5,0,stock.axisY,pivot);
+    const auto size=stock.bounds.hi-stock.bounds.lo;
+    double a=(stock.axisY?size.x:size.y)*.5,b=size.z*.5;
+    double y=std::abs(center.y),z=std::abs(center.z);
+    if(!(size.x>0&&size.y>0&&size.z>0)||!std::isfinite(dot(size,size))||
+       !std::isfinite(stock.endRatio)||stock.endRatio<0||stock.endRatio>1)
+        throw std::invalid_argument("Kích thước phôi không hợp lệ.");
+    if(stock.shape==0)return std::hypot(y+a,z+b);
+    // The large end of the aligned frustum encloses its other cross-sections.
+    if(a<b){std::swap(a,b);std::swap(y,z);}
+    if(a==b)return std::hypot(y,z)+a;
+    double lo=0,hi=std::numbers::pi/2;
+    for(int i=0;i<80;++i){
+        const double t=(lo+hi)*.5;
+        if(b*z-a*y*std::tan(t)-(a*a-b*b)*std::sin(t)>0)lo=t;
+        else hi=t;
+    }
+    const double t=(lo+hi)*.5;
+    return std::hypot(y+a*std::cos(t),z+b*std::sin(t));
+}
+double planeForStock(const StockSpec& stock,V pivot,const QJsonObject& workflow,double requested){
+    const double clearance=workflow.value("safeClearance").toDouble(50);
+    if(!std::isfinite(clearance)||clearance<50||!std::isfinite(requested)||requested<50)
+        throw std::invalid_argument("Chiều cao nhấc chưa được xác định.");
+    return std::max(requested,stockRadius(stock,pivot)+clearance);
+}
+double phaseFeed(int angle,bool finish){
+    if(angle>=0)return 450;
+    return finish?600:550;
+}
 unsigned resolution(int v,int lo,int hi){return unsigned(std::clamp(v,lo,hi));}
 std::vector<Tri> loadMesh(const QJsonObject& request){
     std::vector<float> raw;QString error;
@@ -43,10 +74,11 @@ std::vector<Tri> loadMesh(const QJsonObject& request){
     }
     return mesh;
 }
-QJsonArray wrapMesh(const std::vector<Tri>& mesh,const QJsonObject& workflow){
-    const Tree tree(mesh);
-    auto surface=Wrap::fit(tree,resolution(workflow.value("wrapColumns").toInt(24),8,96),
-                          resolution(workflow.value("wrapStacks").toInt(24),4,128),1.);
+Wrap fitGuide(const Tree& tree,const QJsonObject& workflow,bool axisY,V pivot){
+    return Wrap::fit(tree,resolution(workflow.value("wrapColumns").toInt(24),8,96),
+                     resolution(workflow.value("wrapStacks").toInt(24),4,128),1,axisY,pivot);
+}
+QJsonArray guideTriangles(const Wrap& surface){
     constexpr unsigned n=64,m=48;
     V points[n+1][m+1];
     for(unsigned i=0;i<=n;++i)for(unsigned j=0;j<=m;++j)points[i][j]=surface.eval(double(i)/n,double(j)/m);
@@ -56,6 +88,16 @@ QJsonArray wrapMesh(const std::vector<Tri>& mesh,const QJsonObject& workflow){
         faces.append(a);faces.append(b);faces.append(c);faces.append(a);faces.append(c);faces.append(d);
     }
     return faces;
+}
+QJsonArray wrapMesh(std::vector<Tri> mesh,const QJsonObject& workflow,const QJsonObject& machine){
+    const Tree tree(std::move(mesh));
+    const auto rotary=machine.value("rotary").toArray();
+    if(rotary.isEmpty())return guideTriangles(fitGuide(tree,workflow,false,{}));
+    const auto a=rotary[0].toObject();
+    const auto axis=point(a.value("direction"));
+    if(a.value("role").toString()!="table"||axis.z!=0||!((axis.x==1&&axis.y==0)||(axis.x==0&&axis.y==1)))
+        throw std::invalid_argument("Mặt dẫn tự động cần bàn A dọc X hoặc Y.");
+    return guideTriangles(fitGuide(tree,workflow,axis.y==1,point(a.value("origin"))));
 }
 QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const QJsonObject& work,const JobProgress& progress){
     auto notify=[&](int value,const QString& name,qint64 turn=0,qint64 total=0){
@@ -76,7 +118,7 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
         if(input.open(QIODevice::ReadOnly)){
             for(int i=0;i<80&&!input.atEnd();++i){
                 const auto line=input.readLine(2048);
-                if(line.startsWith("G00 ")){m.axes=line.contains(" B")?5:4;break;}
+                if(line.startsWith("G00 ")&&line.contains(" A")){m.axes=line.contains(" B")?5:4;break;}
             }
         }
     }
@@ -98,8 +140,20 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
         if(b.value("role").toString()!="head"||dot(direction-expected,direction-expected)>1e-12)
             throw std::invalid_argument("Mốc 3 cần cấu trúc bàn A và đầu B vuông góc, theo quy ước trên hồ sơ.");
         m.bSign=b.value("sign").toInt(1);m.arm=machine.value("swingarmMm").toDouble();
+        const auto measuredLever=machine.value("headPivotFromTip");
+        if(!measuredLever.isUndefined()&&!measuredLever.isNull()){
+            const auto lever=point(measuredLever);
+            if(!(lever.z>0&&std::hypot(lever.x,lever.z)<=100000&&std::abs(lever.y)<=100000))
+                throw std::invalid_argument("Vectơ từ mũi dao đến tâm B tại B=0 không hợp lệ.");
+            m.headPivotFromTip=lever;
+        }
         const auto mode=machine.value("rtcpMode").toString();
-        if(mode=="G43.4")m.dialect=Machine::Tcp434;
+        if(mode=="G43.4"){
+            const auto reg=machine.value("rtcpRegister").toString();
+            if(!reg.isEmpty()&&reg!="H1")
+                throw std::invalid_argument("Hồ sơ G43.4 cần H1 để tương thích post hiện tại.");
+            m.dialect=Machine::Tcp434;
+        }
         else if(mode=="TRAORI")m.dialect=Machine::Traori;
         else if(mode=="cam")m.dialect=Machine::Direct;
         else throw std::invalid_argument("Bộ đọc Mốc 3 chưa hỗ trợ hệ bù này.");
@@ -108,6 +162,14 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
     auto shape=s.value("shape").toString();
     StockSpec stock{{point(s.value("min"))-V{e,e,e},point(s.value("max"))+V{e,e,e}},
                     shape=="cylinder"?1:shape=="frustum"?2:0,s.value("endRatio").toDouble(.5),m.axisY};
+    m.safe=planeForStock(stock,m.pivot,work,m.safe);
+    const auto limitZ=m.limits[2];
+    const double datumZ=m.pivot.z+m.machineOffset.z;
+    if(limitZ&&request.value("operation").toString()!="verify-nc"){
+        const double liftZ=datumZ+m.safe+.20;
+        if(liftZ<(*limitZ)[0]||liftZ>(*limitZ)[1])
+            throw std::invalid_argument("Mức nhấc theo kích thước phôi vượt giới hạn mềm Z ở tư thế B=0.");
+    }
     std::vector<Cutter> tools;
     for(auto value:work.value("tools").toArray()){
         auto t=value.toObject();
@@ -116,6 +178,7 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
     }
     if(tools.empty())throw std::invalid_argument("Thư viện dao rỗng.");
     std::vector<PathSpec> paths,raster;std::vector<int> groups;QStringList names;
+    std::optional<double> limitedRasterFloor;
     for(auto value:work.value("paths").toArray()){
         auto p=value.toObject();if(!p.value("active").toBool())continue;
         int angle=p.value("faceAngle").toInt(),tool=p.value("toolIndex").toInt(-1);
@@ -129,14 +192,28 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
         path.clipMax=p.value("clipMax").toDouble(path.clipMax);
         path.bMin=p.value("bMin").toDouble(-20);
         path.bMax=p.value("bMax").toDouble(20);
-        path.feed=p.value("feed").toDouble(600);
+        path.lead=p.value("lead").toDouble();
+        path.lean=p.value("lean").toDouble();
+        path.feed=p.value("feed").toDouble(phaseFeed(angle,path.finish));
         path.rpm=p.value("rpm").toInt(16000);
         path.reverse=p.value("reverse").toBool();
         path.axes=p.value("axes").toInt(m.axes);
         if(path.minZ>path.maxZ||path.clipMin>=path.clipMax||path.bMin>0||path.bMax<0||
+           std::abs(path.lead)>60||std::abs(path.lean)>60||
            path.bMin< -60||path.bMax>60||path.feed<=0||path.rpm<=0||path.rpm>60000||(path.axes>m.axes&&request.value("operation").toString()!="verify-nc"))
             throw std::invalid_argument("Thông số đường dao không hợp lệ hoặc không tương thích post.");
         if(angle>=0){
+            if(limitZ){
+                // Indexed roughing always has B=0. Account for the 0.025 mm
+                // clearance added to emitted raster points and NC rounding.
+                const double floor=(*limitZ)[0]-datumZ;
+                const double previousFloor=std::max(path.minZ,work.value("faces").toInt()==2?-1.:1.);
+                if(floor>previousFloor){
+                    path.minZ=floor;
+                    limitedRasterFloor=floor;
+                }
+                path.maxZ=std::min(path.maxZ,(*limitZ)[1]-datumZ-.026);
+            }
             raster.push_back(path);
         }
         paths.push_back(path);
@@ -157,6 +234,7 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
     if(std::min({span.x,span.y,span.z})<=0)throw std::invalid_argument("Hãy dùng STL hình khối có ba chiều.");
     auto sdf=DistanceGrid::measure(tree,bounds,std::max({std::cbrt(span.x*span.y*span.z/14000.),span.x/90,span.y/90,span.z/90,.8}));
     Spiral program;std::string bytes;
+    QJsonArray driveSurface;
     if(request.value("operation").toString()=="verify-nc"){
         QFile f(request.value("ncFile").toString());
         if(!f.open(QIODevice::ReadOnly)||f.size()>qint64(1024)*1024*1024)throw std::invalid_argument("Không mở được NC hoặc kích thước quá giới hạn.");
@@ -167,42 +245,57 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
             auto pre=generate(mesh,stock,tools,raster,work.value("faces").toInt()==2,m.pivot,m.safe,
                 [&](size_t pass,size_t row,size_t total){
                     notify(12+int(6*(double(pass)+double(row)/total)/raster.size()),
-                           QString("%1 · hàng %2/%3").arg(names.at(qsizetype(pass))).arg(row).arg(total));
+                           QString("%1 · %2 %3/%4").arg(names.at(qsizetype(pass)))
+                               .arg(work.value("faces").toInt()==2?"hàng":"lớp Z").arg(row).arg(total));
                 });
             Pose previous{};
             int oldTool=-1,oldPass=-1;
+            const auto retractKind=m.axes==5?MotionKind::Retract:MotionKind::Rapid;
+            const double retractZ=m.safe+(m.axes==5?.20:0.);
             for(auto c:pre.cuts){
                 Pose target{c.point,c.angle,0};target.tip.z+=.025;
                 Pose raise=target;raise.tip.z=m.safe;
                 if(!c.link||c.tool!=oldTool||c.pass!=oldPass){
-                    if(oldTool>=0){auto leave=previous;leave.tip.z=m.safe;program.moves.push_back({leave,oldTool,oldPass,MotionKind::Rapid});}
+                    if(oldTool>=0){auto leave=previous;leave.tip.z=retractZ;program.moves.push_back({leave,oldTool,oldPass,retractKind});}
                     program.moves.push_back({raise,c.tool,c.pass,MotionKind::Rapid});
                 }
                 program.moves.push_back({target,c.tool,c.pass,c.link?MotionKind::Cut:MotionKind::Approach});
                 previous=target;oldTool=c.tool;oldPass=c.pass;
             }
-            if(oldTool>=0){previous.tip.z=m.safe;program.moves.push_back({previous,oldTool,oldPass,MotionKind::Rapid});}
+            if(oldTool>=0){previous.tip.z=retractZ;program.moves.push_back({previous,oldTool,oldPass,retractKind});}
             for(auto& move:program.moves){move.feed=paths[move.pass].feed;move.rpm=paths[move.pass].rpm;}
             program.unreachable+=pre.rejected;
         }
-        auto wrap=Wrap::fit(tree,resolution(work.value("wrapColumns").toInt(24),8,96),
-                           resolution(work.value("wrapStacks").toInt(24),4,128),1);
         auto rhinoFile=request.value("guideFile").toString();
-        QJsonArray external;
-        if(!rhinoFile.isEmpty()){
-            auto result=readRhinoSurface(rhinoFile);
-            if(!result.value("ok").toBool())throw std::runtime_error(result.value("error").toString().toStdString());
-            external=result.value("guide").toArray();
-        }
-        auto normal=[&](double u,double v){
-            if(external.size()==49*49){
-                double fu=(u-std::floor(u))*48, fv=std::clamp(v,0.,1.)*48;
-                int i=std::min(47,int(fu)),j=std::min(47,int(fv));
-                auto n=[&](int x,int y){return point(external[49*y+x]);};
-                auto low=n(i,j)*(1-(fu-i))+n(i+1,j)*(fu-i),high=n(i,j+1)*(1-(fu-i))+n(i+1,j+1)*(fu-i);
-                return unit(low*(1-(fv-j))+high*(fv-j));
+        std::vector<V> external;
+        std::optional<Wrap> wrap;
+        if(paths.size()>raster.size()){
+            if(rhinoFile.isEmpty()){
+                wrap=fitGuide(tree,work,m.axisY,m.pivot);
+                driveSurface=guideTriangles(*wrap);
+            }else{
+                auto result=readRhinoSurface(rhinoFile);
+                if(!result.value("ok").toBool())throw std::runtime_error(result.value("error").toString().toStdString());
+                const auto normals=result.value("guide").toArray();
+                external.reserve(size_t(normals.size()));
+                for(const auto sample:normals)external.push_back(point(sample));
+                driveSurface=result.value("surface").toArray();
             }
-            V n;wrap.eval(u,v,&n);return n;
+        }
+        GuideNormal normal;
+        if(external.size()==49*49)normal=[samples=std::move(external)](double u,double v){
+            const double fu=(u-std::floor(u))*48,fv=std::clamp(v,0.,1.)*48;
+            const int i=std::min(47,int(fu)),j=std::min(47,int(fv));
+            auto n=[&](int x,int y){return samples[size_t(49*y+x)];};
+            const auto low=n(i,j)*(1-(fu-i))+n(i+1,j)*(fu-i);
+            const auto high=n(i,j+1)*(1-(fu-i))+n(i+1,j+1)*(fu-i);
+            return unit(low*(1-(fv-j))+high*(fv-j));
+        };
+        DriveGuide drive;
+        if(wrap)drive=[&](double u,double axial){
+            DriveSample sample;
+            sample.point=wrap->eval(u,wrap->axialParameter(axial),&sample.normal);
+            return sample;
         };
         for(size_t pass=raster.size();pass<paths.size();++pass){
             int last=-1;size_t lastTurn=0;
@@ -214,7 +307,7 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
                         notify(percent,names.at(qsizetype(pass)),qint64(turn),qint64((total+perTurn-1)/perTurn));
                         last=percent;lastTurn=turn;
                     }
-                });
+                },drive);
             program.unreachable+=plan.unreachable;
             if(!program.moves.empty()&&!plan.moves.empty()){
                 double offsetA=360*std::round((program.moves.back().pose.a-plan.moves.front().pose.a)/360.);
@@ -244,17 +337,31 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
     });
     QJsonArray diagnostics;
     auto add=[&](int line,const QString& msg){if(diagnostics.size()<500)diagnostics.append(QJsonObject{{"line",line},{"message",msg}});};
-    for(auto& error:verified.errors)add(int(error.line),QString::fromStdString(error.message));
+    if(limitedRasterFloor)
+        add(0,QString("Phá mặt dừng ở Z cục bộ %1 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại.").arg(*limitedRasterFloor,0,'f',3));
+    for(const auto& error:verified.errors){
+        if(error.failure==SweepFailure::Travel)
+            add(int(error.line),QStringLiteral("Chuyển động vượt giới hạn hành trình hoặc xuống dưới mặt phẳng an toàn."));
+        else if(error.failure==SweepFailure::Assembly)
+            add(int(error.line),QStringLiteral("Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."));
+        else if(error.failure==SweepFailure::Unresolved)
+            add(int(error.line),QStringLiteral("Chưa chứng minh được khoảng hở liên tục của đoạn chuyển động."));
+        else add(int(error.line),QString::fromStdString(error.message));
+    }
     Spiral reconstructed;reconstructed.moves=std::move(verified.motions);
     StockSim sim;
     notify(93,"Mô phỏng phôi");
     if(verified.errors.empty())sim=simulateStock(stock,reconstructed,m,tools,groups,tree);
     QJsonArray stages;
+    double gougeDepth=0;
     for(auto& stage:sim.stages){
         QJsonArray shell, excessMap,gougeMap;
         for(auto p:stage.shell)shell.append(json(p));
         for(auto p:stage.excessMap)excessMap.append(json(p));
-        for(auto p:stage.gougeMap)gougeMap.append(json(p));
+        for(auto p:stage.gougeMap){
+            gougeMap.append(json(p));
+            gougeDepth=std::max(gougeDepth,tree.distance(p));
+        }
         stages.append(QJsonObject{{"group",stage.group},{"remaining",qint64(stage.remaining)},
             {"excess",qint64(stage.excess)},{"gouge",qint64(stage.gouge)},{"shell",shell},{"excessMap",excessMap},{"gougeMap",gougeMap}});
     }
@@ -263,7 +370,7 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
     for(auto& l:liftRecords){if(lifts.size()>=1000)break;lifts.append(QJsonObject{{"pass",l.pass},{"where",json(partPoint(l.location,m))},{"a",l.location.a},{"reason",QString::fromStdString(l.reason)}});}
     QJsonArray display;const auto& moves=reconstructed.moves;
     const size_t stride=std::max(size_t(1),(moves.size()+50000)/50000);
-    for(size_t i=1;i<moves.size();i+=stride)if(moves[i].kind!=MotionKind::Rapid){
+    for(size_t i=1;i<moves.size();i+=stride)if(moves[i].kind==MotionKind::Cut||moves[i].kind==MotionKind::Approach){
         display.append(json(partPoint(moves[i-1].pose,m)));display.append(json(partPoint(moves[i].pose,m)));
     }
     QJsonArray playback;
@@ -281,8 +388,12 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
             playback.append(QJsonArray{seconds,tip.x,tip.y,tip.z,move.pose.a,move.pose.b,move.tool});
         }
     }
-    bool ok=verified.errors.empty()&&sim.stockWarnings==0;
-    const bool calibrated=offset.isArray()&&m.limits[2].has_value()&&machine.value("offsetConfirmed").toBool(true);
+    // The 0.004 mm NC tolerance also bounds ambiguity of centers sitting
+    // almost exactly on the STL. Deeper removed model centers block export.
+    if(gougeDepth>.004)
+        add(0,QString("Mô phỏng loại voxel nằm sâu %1 mm trong mẫu STL.").arg(gougeDepth,0,'f',4));
+    bool ok=verified.errors.empty()&&sim.stockWarnings==0&&gougeDepth<=.004;
+    const bool calibrated=offset.isArray()&&m.limits[2].has_value()&&machine.value("offsetConfirmed").toBool(false);
     if(!calibrated)add(0,QStringLiteral("Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."));
     const bool exportable=ok&&calibrated&&request.value("operation").toString()!="verify-nc";
     const QString outputPath=request.value("ncOutput").toString();
@@ -292,10 +403,10 @@ QJsonObject runMotionJob(const QJsonObject& request,std::vector<Tri> mesh,const 
             throw std::runtime_error("Không ghi được tệp NC.");
     }
     notify(100,"Đã hoàn tất");
-    return {{"ok",true},{"kind","motion"},{"fileVerification",request.value("operation").toString()=="verify-nc"},{"verified",ok},{"cuts",int(moves.size())},{"blocks",int(verified.blocks)},
+    return {{"ok",true},{"kind","motion"},{"fileVerification",request.value("operation").toString()=="verify-nc"},{"verified",ok},{"cuts",int(moves.size())},{"blocks",int(verified.blocks)},{"surface",driveSurface},
             {"unreachable",int(program.unreachable)},{"segments",display},{"lifts",lifts},{"diagnostics",diagnostics},
             {"stages",stages},{"pitch",sim.pitch},{"calibratedOffset",calibrated},
-            {"playback",playback},{"seconds",seconds},{"liftCount",qint64(liftRecords.size())},
+            {"playback",playback},{"seconds",seconds},{"liftCount",qint64(liftRecords.size())},{"safePlane",m.safe},
             {"ncOnDisk",exportable&&!outputPath.isEmpty()},
             {"ncPreview",QString::fromLatin1(bytes.data(),qsizetype(std::min<size_t>(bytes.size(),16000)))},
             {"nc",exportable&&outputPath.isEmpty()?QString::fromStdString(bytes):QString()}};
@@ -311,7 +422,7 @@ QJsonObject runCamJob(const QJsonObject& request,const JobProgress& progress){
     if(op=="plan-motion"||op=="verify-nc")return runMotionJob(request,std::move(mesh),work,progress);
     if(op=="wrap-stl"){
         if(progress)progress(15,"Dựng mặt bọc NURBS",0,0);
-        auto surface=wrapMesh(mesh,work);
+        auto surface=wrapMesh(std::move(mesh),work,request.value("machine").toObject());
         if(progress)progress(100,"Đã dựng mặt bọc",0,0);
         return {{"ok",true},{"surface",surface},{"kind","wrap"}};
     }
@@ -339,8 +450,7 @@ QJsonObject runCamJob(const QJsonObject& request,const JobProgress& progress){
                           t.value("overhang").toDouble(),t.value("flute").toDouble(),t.value("holderDiameter").toDouble()*.5});
     }
     std::vector<PathSpec> paths;
-    double lift=request.value("retract").toDouble();
-    if(!std::isfinite(lift)||lift<50)throw std::invalid_argument("Chiều cao nhấc chưa được xác định.");
+    double lift=planeForStock(stock,pivot,work,request.value("retract").toDouble());
     for(auto value:work.value("paths").toArray()){
         auto p=value.toObject();if(!p.value("active").toBool())continue;
         int angle=p.value("faceAngle").toInt(), tool=p.value("toolIndex").toInt(-1);

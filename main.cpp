@@ -21,9 +21,10 @@
 #include "workflow.h"
 #include "stock.h"
 #include "theme.h"
+#include "updater.h"
 
 #ifndef ARTISAN_VERSION
-#define ARTISAN_VERSION "1.1.0"
+#define ARTISAN_VERSION "1.2.0"
 #endif
 
 class Workshop final : public QMainWindow {
@@ -56,6 +57,7 @@ class Workshop final : public QMainWindow {
     QList<QAction*> suspendedControls;
     Stock stock;
     QString modelFile,guideFile;
+    bool surfaceVisible=true;
     QJsonArray stages,diagnostics,lifts;
     QComboBox* stagesBox=new QComboBox;
     double voxelPitch=0;
@@ -80,7 +82,7 @@ class Workshop final : public QMainWindow {
         if(!saveWorkspaceEnabled)return;
         const auto path=workspacePath();QDir().mkpath(QFileInfo(path).absolutePath());
         QSaveFile out(path);
-        const auto data=QJsonDocument(QJsonObject{{"version",1},{"file",modelFile},{"guideFile",guideFile},
+        const auto data=QJsonDocument(QJsonObject{{"version",1},{"file",modelFile},{"guideFile",guideFile},{"surfaceVisible",surfaceVisible},
             {"transform",modelTransform()},{"stockAuto",stockAuto},{"stock",stockJson()},{"workflow",flow.snapshot()}}).toJson(QJsonDocument::Compact);
         if(!out.open(QIODevice::WriteOnly)||out.write(data)!=data.size()||!out.commit())
             qWarning()<<"Failed to save workspace"<<out.errorString();
@@ -90,6 +92,8 @@ class Workshop final : public QMainWindow {
         if(!file.open(QIODevice::ReadOnly)||file.size()>1048576)return;
         auto values=QJsonDocument::fromJson(file.readAll()).object();if(values.value("version").toInt()!=1)return;
         flow.restore(values.value("workflow").toObject());
+        surfaceVisible=values.value("surfaceVisible").toBool(true);
+        view->setSurfaceVisible(surfaceVisible);
         auto item=values.value("stock").toObject();
         auto lo=item.value("min").toArray(),hi=item.value("max").toArray();
         Stock restored;restored.shape=item.value("shape").toString();
@@ -266,7 +270,15 @@ class Workshop final : public QMainWindow {
         };
         branch("Mô hình","model",{modelFile.isEmpty()?QString("Chưa nạp STL"):QFileInfo(modelFile).fileName()});
         branch("Phôi","stock",{stock.shape=="box"?"Hộp":stock.shape=="cylinder"?"Trụ":"Chóp cụt"});
-        branch("Thư viện dao","tools",flow.toolNames());branch("Mặt dẫn","surface",{});
+        branch("Thư viện dao","tools",flow.toolNames());
+        branch("Mặt dẫn","surface",{"Dựng từ STL","Nhập mặt Rhino .3dm…"});
+        auto* surfaceRoot=tree->topLevelItem(tree->topLevelItemCount()-1);
+        surfaceRoot->setFlags(surfaceRoot->flags()|Qt::ItemIsUserCheckable);
+        surfaceRoot->setCheckState(0,surfaceVisible?Qt::Checked:Qt::Unchecked);
+        surfaceRoot->setToolTip(0,"Tích để hiện lớp bọc trong khung nhìn 3D.");
+        surfaceRoot->setText(1,surfaceOverlay.empty()?"Chưa hiển thị":guideFile.isEmpty()?"Lớp bọc STL":"Mặt Rhino");
+        surfaceRoot->child(0)->setData(0,Qt::UserRole,"surface-build");
+        surfaceRoot->child(1)->setData(0,Qt::UserRole,"surface-import");
         branch("Đường dao","paths",flow.pathNames());
         auto* pathRoot=tree->topLevelItem(tree->topLevelItemCount()-1);
         pathRoot->setData(0,Qt::UserRole,QString{});
@@ -320,8 +332,14 @@ class Workshop final : public QMainWindow {
             m.scale(signedScale(0),signedScale(1),signedScale(2));transform(m);
         }
     }
+    void importGuide(){
+        const auto file=QFileDialog::getOpenFileName(this,"Nhập mặt Rhino",{},"Rhino (*.3dm)");
+        if(!file.isEmpty())launchJob("import-3dm",file);
+    }
     void dialog(QString key,int index=0){
         if(jobBusy)return;
+        if(key=="surface-build"){launchJob("wrap-stl",modelFile);return;}
+        if(key=="surface-import"){importGuide();return;}
         if(key=="model"){model();return;}
         if(key=="stock"){
             view->setSimStock({},{},{});stagesBox->setCurrentIndex(0);
@@ -329,7 +347,13 @@ class Workshop final : public QMainWindow {
             if(editStock(this,stock,alongY(),machine.rotaryOrigin(),machine.rotaryDirection(),[this](const Stock& s){drawStock(s);},[this](Stock& s){return fitStock(s);},flow.safeClearance())){
                 stockAuto=false;syncStock();changed();
             }else drawStock(original);
-        }else if(key=="machine"){if(machine.edit(this)){syncMachine();changed();}}
+        }else if(key=="machine"){
+            const auto origin=machine.rotaryOrigin(),axis=machine.rotaryDirection();
+            if(machine.edit(this)){
+                if(guideFile.isEmpty()&&(origin!=machine.rotaryOrigin()||axis!=machine.rotaryDirection()))surfaceOverlay.clear();
+                syncMachine();changed();
+            }
+        }
         else {
             bool saved=false;
             if(key=="tools")saved=flow.editTools(this);
@@ -341,7 +365,14 @@ class Workshop final : public QMainWindow {
                 }
                 return;
             }
-            if(key=="surface")saved=flow.editSurface(this);
+            if(key=="surface"){
+                const auto before=flow.snapshot();
+                if(flow.editSurface(this)&&before!=flow.snapshot()){
+                    if(guideFile.isEmpty())surfaceOverlay.clear();
+                    invalidateOutput();
+                }
+                return;
+            }
             if(key=="ai"){
                 const auto beforeStock=stockJson(),beforePlan=flow.snapshot();
                 Workflow::AiAction cmd;
@@ -508,9 +539,15 @@ public:
                 invalidateOutput();
         });
         connect(tree,&QTreeWidget::itemChanged,this,[this](QTreeWidgetItem* item,int column){
-            if(jobBusy||column!=0||item->data(0,Qt::UserRole)!="paths")return;
-            if(flow.setPathActive(item->data(0,Qt::UserRole+1).toInt(),item->checkState(0)==Qt::Checked))
+            if(jobBusy||column!=0)return;
+            const auto key=item->data(0,Qt::UserRole).toString();
+            const bool checked=item->checkState(0)==Qt::Checked;
+            if(key=="surface"){
+                surfaceVisible=checked;
+                view->setSurfaceVisible(checked);
                 saveWorkspace();
+            }
+            if(key=="paths"&&flow.setPathActive(item->data(0,Qt::UserRole+1).toInt(),checked))saveWorkspace();
         });
         auto* bar=addToolBar("Xưởng");bar->setMovable(false);
         auto action=[&](QString name,auto fn){auto* a=bar->addAction(name);connect(a,&QAction::triggered,this,fn);return a;};
@@ -612,70 +649,16 @@ public:
         });
         connect(settings->addAction("Mặt dẫn"),&QAction::triggered,this,[this]{dialog("surface");});
         connect(settings->addAction("Dựng mặt bọc STL"),&QAction::triggered,this,[this]{launchJob("wrap-stl",modelFile);});
-        connect(settings->addAction("Nhập mặt Rhino .3dm…"),&QAction::triggered,this,[this]{
-            auto file=QFileDialog::getOpenFileName(this,"Nhập mặt Rhino",{},"Rhino (*.3dm)");
-            if(!file.isEmpty())launchJob("import-3dm",file);
-        });
+        connect(settings->addAction("Nhập mặt Rhino .3dm…"),&QAction::triggered,this,&Workshop::importGuide);
         auto* application=menuBar()->addMenu("Ứng dụng");
         auto* updates=application->addAction("Cập nhật 1-Click");
         bar->addAction(updates);
-        connect(application->addAction("Nguồn thông báo Google Sheet…"),&QAction::triggered,this,[this]{
-            const QString dir=QDir::homePath()+"/AppData/Local/XuanDieuCNC/ArtisanAxis";
-#ifdef Q_OS_WIN
-            const auto local=qEnvironmentVariable("LOCALAPPDATA");
-            const auto base=local.isEmpty()?dir:local+"/XuanDieuCNC/ArtisanAxis";
-#else
-            Q_UNUSED(dir);
-            const auto base=QStandardPaths::writableLocation(QStandardPaths::AppConfigLocation);
-#endif
-            QFile settings(base+"/updates.json");
-            QJsonObject values;
-            if(settings.open(QIODevice::ReadOnly))values=QJsonDocument::fromJson(settings.readAll()).object();
-            settings.close();
-            QFile releaseConfig(QCoreApplication::applicationDirPath()+"/scripts/update-feed.json");
-            QJsonObject release;
-            if(releaseConfig.open(QIODevice::ReadOnly))release=QJsonDocument::fromJson(releaseConfig.readAll()).object();
-            const bool pinned=!release.value("publisherSignerSha1").toString().trimmed().isEmpty();
-            const QString policy=pinned
-                ? QStringLiteral("Xác minh SHA256, phiên bản và chữ ký của nhà phát hành đã ghim.")
-                : QStringLiteral("Xác minh SHA256 và phiên bản. Chỉ nhập nguồn CSV do xưởng quản lý.");
-            bool accepted=false;
-            auto url=QInputDialog::getText(this,"Cài đặt cập nhật",
-                QStringLiteral("URL CSV đã xuất bản (để trống dùng GitHub)\n")+policy,
-                QLineEdit::Normal,values.value("googleSheetCsv").toString(),&accepted).trimmed();
-            if(!accepted)return;
-            const QUrl address(url);
-            if(!url.isEmpty()&&(!address.isValid()||address.scheme()!="https"||address.host()!="docs.google.com"||
-                                !address.userInfo().isEmpty())){
-                QMessageBox::warning(this,"Cập nhật","Chỉ nhận URL HTTPS từ docs.google.com.");return;
-            }
-            values["googleSheetCsv"]=url;
-            QDir().mkpath(base);
-            QSaveFile output(base+"/updates.json");
-            if(!output.open(QIODevice::WriteOnly)||output.write(QJsonDocument(values).toJson())<0||!output.commit())
-                QMessageBox::warning(this,"Cập nhật",output.errorString());
-        });
-        connect(updates,&QAction::triggered,this,[this,updates]{
-#ifdef Q_OS_WIN
-            if(worker.state()!=QProcess::NotRunning||loading){statusBar()->showMessage("Hãy đợi tác vụ hoàn tất trước khi cập nhật.");return;}
-            const auto script=QCoreApplication::applicationDirPath()+"/scripts/Update.ps1";
-            auto* update=new QProcess(this);
-            updating=true;updates->setEnabled(false);
-            auto finish=[this,updates,update](bool started){
-                const auto result=QJsonDocument::fromJson(update->readAllStandardOutput()).object();
-                update->deleteLater();
-                updating=false;updates->setEnabled(true);
-                if(result.value("ready").toBool()){close();return;}
-                if(result.value("ok").toBool())statusBar()->showMessage("Ứng dụng đã ở phiên bản mới nhất.");
-                else QMessageBox::warning(this,"Cập nhật",started?result.value("error").toString("Trình cập nhật không trả kết quả hợp lệ."):"Chưa mở được trình cập nhật.");
-            };
-            connect(update,&QProcess::finished,this,[finish](int,QProcess::ExitStatus){finish(true);});
-            connect(update,&QProcess::errorOccurred,this,[finish](QProcess::ProcessError e){if(e==QProcess::FailedToStart)finish(false);});
-            update->start("powershell.exe",{"-NoProfile","-NonInteractive","-File",script,"-Apply","-ParentPid",QString::number(QCoreApplication::applicationPid())});
-#else
-            QMessageBox::information(this,"Cập nhật","Bộ cập nhật dành cho gói cài Windows.");
-#endif
-        });
+        auto* updater=new UpdateController(this,[this]{return !jobBusy&&!loading;},
+            [this](bool installing){updating=installing;});
+        connect(updates,&QAction::triggered,updater,[updater]{updater->check();});
+        connect(application->addAction("Cấu hình Cập nhật…"),&QAction::triggered,updater,[updater]{updater->configure();});
+        connect(application->addAction("Nguồn thông báo Google Sheet…"),&QAction::triggered,updater,[updater]{updater->configure(true);});
+        updater->start();
         for(auto* control:bar->actions())jobControls.insert(control);
         for(auto* control:cameras->actions())jobControls.insert(control);
         for(auto* control:menuBar()->findChildren<QAction*>())jobControls.insert(control);
@@ -716,6 +699,7 @@ public:
                     nc=result.value("nc").toString().toUtf8();
                     lifts=result.value("lifts").toArray();
                     calculatedPaths.unite(jobPaths);lastNcPaths=jobPaths;
+                    if(!result.value("surface").toArray().isEmpty())surfaceOverlay=unpack(result.value("surface"));
                     refresh();
                     if(!exportTarget.isEmpty()&&!saveNc(exportTarget))
                         QMessageBox::warning(this,"Xuất NC","Tệp chưa qua kiểm chứng hoặc không ghi được.");
@@ -740,6 +724,7 @@ public:
                 const auto nextGuide=kind=="rhino"?jobInput:QString{};
                 if(guideFile!=nextGuide){guideFile=nextGuide;invalidateOutput();}
                 surfaceOverlay=unpack(result.value("surface"));
+                refresh();
                 statusBar()->showMessage(kind=="rhino"?QString("Mặt Rhino đã nhập · %1 đối tượng hoặc mặt bỏ qua").arg(result.value("skipped").toInt()):
                                                    QString("Đã dựng mặt bọc tự động từ STL."));
             }

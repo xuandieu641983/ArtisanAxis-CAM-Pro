@@ -1,4 +1,4 @@
-# ArtisanAxis CAM Pro · v1.1.0
+# ArtisanAxis CAM Pro · v1.2.0
 
 Mã nguồn native C++20 / Qt 6 cho xưởng Xuân Diệu CNC.
 
@@ -6,7 +6,7 @@ Mã nguồn native C++20 / Qt 6 cho xưởng Xuân Diệu CNC.
 - Chọn hồ sơ máy, **4 Trục đồng thời (XYZA)** hoặc **5 Trục đồng thời (XYZAB)** rồi tích các đường trong cây dự án. Có thể chọn chiến lược theo từng công đoạn. Với một chương trình có cả lượt 4X và 5X, post 5X ghi B = 0 trong các lượt 4X.
 - **Lưu & Đóng** chỉ lưu cấu hình. Dùng **Tính các đường đã tích**, **Tính riêng đường này** hoặc lệnh **Tự động tính toàn bộ** trong Trợ lý CAM để chạy. Hai nút xuất riêng trong Trợ lý tính và kiểm chứng nhóm được chọn trước khi ghi tệp.
 - CAMWorker gửi tiến độ thực qua từng giai đoạn. Hủy giữ kết quả hợp lệ trước đó nếu cấu hình dự án vẫn khớp. Dùng thanh mô phỏng đáy cửa sổ để kéo tới vị trí bất kỳ hoặc chạy từ 1× đến 20×. Thời gian hiển thị là ước tính từ chiều dài chuyển động và tốc độ, không dùng mô hình tăng giảm tốc của bộ điều khiển.
-- Dùng **Thiết lập → Dựng mặt bọc STL** để xem lưới bọc bán trong suốt. Bản build OpenNURBS nhận thêm mặt dẫn **.3dm**. Dùng **Nhật ký NC** để xem kết quả kiểm chứng và các lần tách lượt.
+- Mở **Mặt dẫn → Dựng từ STL** để dựng mặt dẫn thích ứng trong hệ trục quay. Ô tích tại **Mặt dẫn** bật tắt lưới bọc bán trong suốt. Bản build OpenNURBS nhận thêm mặt dẫn **.3dm**. Dùng **Nhật ký NC** để xem kết quả kiểm chứng và các lần tách lượt.
 
 ## Tính xoắn ốc dài
 
@@ -31,20 +31,22 @@ Có thể bật Rhino bằng -DARTISAN_RHINO=ON, dùng checkout đã ghim với 
 ## Hệ tọa độ, post và kiểm chứng
 
 - Tọa độ mũi lưu trong khung tức thời của bàn quay. B quay quanh trục ngang của khung đó. Với 4X, B = 0 và không có từ lệnh B. Y thay đổi trong từng ứng viên trước khi Drop-Cutter. Với bàn A dọc Y, hướng dọc và ngang đổi tương ứng.
-- 5X hiện áp dụng máy bàn A + đầu B vuông góc. Mô hình tay đòn giả định đòn dọc trục dao trung hòa. Tọa độ cơ khí suy ra từ mũi, chênh lệch tay đòn so với B = 0 và workOffsetMachine [X,Y,Z] nhập trực tiếp ở Hồ sơ máy. Bộ xuất khóa khi tọa độ này chưa được xác nhận hoặc thiếu giới hạn Z. Máy đầu–đầu, bàn–bàn, tay đòn lệch tâm khỏi trục dao và G43.5 chưa được mô hình hóa.
+- 5X hiện áp dụng máy bàn A + đầu B vuông góc. Mặc định tay đòn dọc trục dao trung hòa. Hồ sơ nâng cao nhận vectơ `headPivotFromTip` đã đo từ mũi dao đến tâm đầu B ở B=0, theo hệ Cartesian cục bộ có X dọc trục A và Z hướng lên. Vectơ này thay tay đòn mặc định khi tính kiểm chứng. Tọa độ cơ khí suy ra từ mũi, chênh lệch tay đòn so với B = 0 và workOffsetMachine [X,Y,Z] nhập trực tiếp ở Hồ sơ máy. Cả 4X và 5X chỉ ghi tệp NC khi người vận hành xác nhận offset và hồ sơ có giới hạn Z. Máy đầu–đầu, bàn–bàn và G43.5 chưa được mô hình hóa.
 - Các profile CM600, Syntec và Fanuc xuất mẫu G43.4 H1/G49 theo quy ước XYZ mũi trong hệ phôi. Profile Siemens dùng TRAORI/TRAFOOF theo cùng mô hình. Profile không RTCP xuất XYZ đã bù chênh tay đòn. Các mẫu chưa được chạy trên firmware thực tế tương ứng. A/B xuất theo dấu cấu hình.
-- G00 dịch ngang hoặc đổi A/B yêu cầu cao trình an toàn. G01 dùng cho cắt xoắn ốc đồng thời. Khối khởi đầu giả định máy bắt đầu ở tư thế trung hòa đã an toàn. Phần mềm không có vị trí máy thật trước khối đầu. Cần đối chiếu thực tế bật/hủy RTCP, hành trình, gốc máy, thủ tục thay dao và gá trước khi đưa vào sản xuất.
-- Sau khi lưu, ứng dụng tự đọc lại chính tệp vừa ghi. **Đọc lại NC** cũng cho phép mở file đã lưu và xác minh với STL, dao và máy đang chọn. Bộ đọc chấp nhận tập con phát sinh của ArtisanAxis (G00/G01 tuyệt đối, đầy đủ tọa độ, lệnh bù, spindle, tool, kết thúc). Nó dựng lại từ số đã làm tròn trong NC, xét hành trình và kiểm tra sweep trên STL. Lỗi có số dòng. Chu trình tổng quát, arc và macro chưa được hỗ trợ. Mô hình nội suy là XYZ và góc đồng bộ trong khối; quy tắc nội suy firmware vẫn cần đối chiếu.
+- CAMWorker tính cao trình từ bán kính quay của phôi và khoảng nhấc. Post phát lệnh Z độc lập trước lệnh di chuyển XY/A/B đầu tiên. G00 dịch ngang hoặc đổi A/B yêu cầu cao trình an toàn. G01 dùng cho cắt xoắn ốc đồng thời. Phần mềm giả định đầu dao ở tư thế trung hòa, gốc G54 đã thiết lập và hành trình nâng ban đầu không vướng đồ gá. Cần đối chiếu thực tế bật/hủy RTCP, hành trình, gốc máy, thủ tục thay dao và gá trước khi đưa vào sản xuất.
+- Sau khi lưu, ứng dụng tự đọc lại chính tệp vừa ghi. **Đọc lại NC** cũng cho phép mở file đã lưu và xác minh với STL, dao và máy đang chọn. Bộ đọc chấp nhận tập con phát sinh của ArtisanAxis gồm G00/G01 tuyệt đối, nhấc Z ban đầu, lệnh bù, spindle, tool và kết thúc. Nó dựng lại từ số đã làm tròn trong NC, xét hành trình và kiểm tra sweep trên STL. Lỗi có số dòng. Chu trình tổng quát, arc và macro chưa được hỗ trợ. Mô hình nội suy dùng XYZ và góc đồng bộ trong khối. Quy tắc nội suy firmware vẫn cần đối chiếu.
 
 ## Đường dao, mô phỏng và nhật ký
 
-1. Quy hoạch động trên đồ thị C-Space nhiều lớp tìm chuỗi A liên tục, Y lệch tâm và B dẫn hướng bởi pháp tuyến mặt bọc. Drop-Cutter dùng đúng tư thế ứng viên. Bù cầu nằm trong nghiệm Drop-Cutter và post không cộng bán kính thêm. Điểm tiếp xúc tinh lấy đúng nghiệm Drop-Cutter 0,00 mm. Lõi chia nhỏ dây cung khi cần, giữ điểm chèn trên mặt bao tiếp xúc. Chỉ bộ đọc lại NC dùng dung sai 0,004 mm ở phần lưỡi chạm mẫu để đối chiếu NC 3 chữ số. Phần côn, thân và collet giữ kiểm tra riêng.
+- Preset 4 mặt xử lý toàn bộ lượt quét ở từng cao độ trước khi hạ lớp. STL và lượng dư xác định nơi được phép cắt. Khi giới hạn hành trình Z giữ lại vật liệu ở dưới, CAMWorker báo mức Z cục bộ trong nhật ký. Mặc định F phá mặt, phá tròn cận tinh và tinh lần lượt là 450, 550 và 600 mm/phút. Người vận hành có thể đặt tốc độ cho từng công đoạn.
+
+1. Quy hoạch động trên đồ thị C-Space nhiều lớp tìm chuỗi A liên tục, Y lệch tâm và B dẫn hướng bởi pháp tuyến mặt bọc. Tọa độ mặt dẫn đặt tia chiếu. Drop-Cutter tìm tiếp xúc trên STL ở đúng tư thế ứng viên. Đặt Lead/Lean trong hộp thoại Đường dao 5X. Lõi ánh xạ hướng vào A/B khả thi, làm mượt bằng SLERP, chiếu lại tiếp xúc và kiểm tra hai đoạn nối trước khi nhận thay đổi. Bù cầu nằm trong nghiệm Drop-Cutter và post không cộng bán kính thêm. Điểm tiếp xúc tinh lấy đúng nghiệm Drop-Cutter 0,00 mm. Lõi chia nhỏ dây cung khi cần, giữ điểm chèn trên mặt bao tiếp xúc. Chỉ bộ đọc lại NC dùng dung sai 0,004 mm ở phần lưỡi chạm mẫu để đối chiếu NC 3 chữ số. Phần côn, thân và collet giữ kiểm tra riêng.
 2. SDF hỗ trợ lọc khoảng cách, BVH kiểm tra mặt STL, bao côn chia vành và kiểm tra cùng bao thân/collet. Đoạn nối dùng mô hình nội suy của post, thử lướt thấp khi phù hợp. Cận dịch chuyển và chia thích nghi dùng để chứng minh khoảng hở. Nếu không nối được, tách lượt và lưu tọa độ, nguyên nhân trong **Nhật ký NC**. Vùng không tiếp cận được thống kê theo lớp không tìm được tư thế. Chưa có bản đồ chứng minh phủ toàn bộ mặt trong khe tượng thật.
 3. **Nhập mặt Rhino** dùng pháp tuyến của mặt đầu tiên nội suy từ lưới tham số 49×49 vào bộ sinh hướng. Cần căn chung hệ tọa độ và phương tham số quanh thân/dọc trục. STL vẫn quyết định hình học tiếp xúc. Hồ sơ mặt nhập cần trùng định hướng với mẫu, chưa tự đăng ký hình học.
 4. Chọn **Sau phá mặt / Sau cận tinh / Sau chạy tinh** để xem phôi còn lại. Màu cam là dư bề mặt, đỏ là voxel mục tiêu đã bị bóc. Bảng báo kích thước ô và số voxel. Voxel dư có thể bao gồm lượng dư chủ động. Phôi được mô phỏng trên các mẫu chuyển động đọc lại từ NC. Bộ mô phỏng phát hiện một số trường hợp thân/collet hoặc chạy nhanh quẹt phôi và khóa xuất nếu phát hiện. Đây là phép kiểm tra lấy mẫu theo độ phân giải voxel, chưa có chứng minh va chạm liên tục với phôi và chưa nhận hình CAD đồ gá.
-5. Giới hạn quy mô đồ thị có báo lỗi. Chưa đo thời gian cả job trên lưới tượng 1–3 triệu tam giác thực của xưởng.
+5. Giới hạn quy mô đồ thị có báo lỗi. Dùng `tools/qa-dilac` để chạy bài thử chẩn đoán trên STL thật. Số liệu lần bàn giao và các bước còn cần nghiệm thu nằm trong NGHIEM_THU_FINAL.md.
 
-Hướng dẫn cấu hình căn bản và chế độ phân độ cũ có trong README_MOC2.md. Kết quả của Mốc 3 được lưu riêng ở KIEM_THU_MOC3.md.
+Bảng đối chiếu bản nền và thiết kế nâng cấp nằm trong DOI_CHIEU_LOI_CAM.md. Số liệu từ dự án và chương trình đã chạy thử của xưởng nằm trong DOI_CHIEU_CM600.md. Hướng dẫn cấu hình căn bản và chế độ phân độ cũ có trong README_MOC2.md. Kết quả của Mốc 3 được lưu riêng ở KIEM_THU_MOC3.md.
 
 Xem NGHIEM_THU_FINAL.md và HUONG_DAN_CAI_DAT_VA_CAP_NHAT.md để phân biệt các kết quả đã chạy với phạm vi cần Windows/GitHub và máy thật.
 

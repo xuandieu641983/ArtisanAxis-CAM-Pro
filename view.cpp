@@ -286,7 +286,7 @@ void View::paintGL() {
         glDepthMask(GL_TRUE); glDisable(GL_BLEND);
     }
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
-    draw(surfaceBuffer_,int(surfaceFaces_.size()/3),GL_TRIANGLES,part,{.21f,.84f,.64f},.30f,true);
+    if(surfaceVisible_)draw(surfaceBuffer_,int(surfaceFaces_.size()/3),GL_TRIANGLES,part,{.21f,.84f,.64f},.30f,true);
     glDepthMask(GL_TRUE);glDisable(GL_BLEND);
     if(sim&&stockVisible_){
         draw(simIntactBuffer_,int(simIntact_.size()/3),GL_TRIANGLES,part,{.82f,.65f,.45f},1,true);

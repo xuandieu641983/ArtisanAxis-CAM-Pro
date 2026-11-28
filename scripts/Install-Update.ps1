@@ -4,7 +4,10 @@ $tx = Get-Content -LiteralPath (Join-Path $stage 'transaction.json') -Raw | Conv
 $app = [IO.Path]::GetFullPath([string]$tx.app).TrimEnd('\')
 $exe = Join-Path $app 'ArtisanAxis.exe'
 $setup = Join-Path $stage 'Setup.exe'
-$rollback = $app + '.rollback-' + [Guid]::NewGuid().ToString('N')
+$keepBackup = $tx.keepBackup -is [bool] -and $tx.keepBackup
+$previousVersion = [version]$tx.previousVersion
+$backupLabel = if ($keepBackup) { '.backup-v' + $previousVersion.ToString() + '-' } else { '.rollback-' }
+$rollback = $app + $backupLabel + [Guid]::NewGuid().ToString('N')
 $failed = $app + '.failed-' + [Guid]::NewGuid().ToString('N')
 $meta = Join-Path $stage 'uninstall.reg'
 $keyName = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\ArtisanAxis.XuanDieuCNC_is1'
@@ -74,6 +77,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Khong sao luu duoc muc go cai dat.' }
     Move-Item -LiteralPath $app -Destination $rollback
     Write-Log "Backup: $rollback"
+    if ($keepBackup) {
+        Copy-Item -LiteralPath $meta -Destination (Join-Path $rollback 'ArtisanAxis-Uninstall-Backup.reg')
+    }
 
     $setupArguments = @('/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/NOCLOSEAPPLICATIONS','/NORESTARTAPPLICATIONS',
               ('/DIR="' + $app + '"'), ('/LOG="' + $installLog + '"'))
@@ -111,7 +117,11 @@ try {
     if (!$confirmed -or $newApp.WaitForExit(3000)) { throw 'Phien ban moi khong xac nhan khoi dong on dinh.' }
     $committed = $true
     Write-Log "Commit $newVersion"
-    Remove-Item -LiteralPath $rollback -Recurse -Force -ErrorAction SilentlyContinue
+    if (!$keepBackup) {
+        Remove-Item -LiteralPath $rollback -Recurse -Force -ErrorAction SilentlyContinue
+    } else {
+        Write-Log "Backup retained: $rollback"
+    }
 } catch {
     $cause = $_.Exception.Message
     Write-Log $cause

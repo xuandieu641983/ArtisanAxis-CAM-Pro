@@ -37,6 +37,7 @@ private:
         double pointSpacing=0,stepDown=0,zMin=-1e6,zMax=1e6,clipMin=-1e6,clipMax=1e6,bMin=-20,bMax=20,feed=600;
         int rpm=16000;
         bool reverse=false;
+        double lead=0,lean=0;
     };
     QVector<Tool> tools_;
     QVector<Path> paths_;

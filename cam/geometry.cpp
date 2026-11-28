@@ -1,5 +1,7 @@
 #include "geometry.h"
 #include <algorithm>
+#include <bit>
+#include <cstdint>
 #include <cmath>
 #include <future>
 #include <numbers>
@@ -185,6 +187,64 @@ bool Tree::spanClear(V tip,Span s,double tolerance)const{
     }
     return true;
 }
+bool Tree::spansClear(V tip,std::span<const Span> spans,double tolerance)const{
+    // The same projected disks as spanClear, sharing one traversal and
+    // one frame transform per visited node/triangle. A parent mask limits
+    // the number of tapered rings to test lower in the tree.
+    constexpr unsigned maxSpans=32;
+    if(spans.size()>maxSpans)
+        return std::all_of(spans.begin(),spans.end(),[&](Span span){return spanClear(tip,span,tolerance);});
+    std::array<double,maxSpans> minZ{},radius2{};
+    std::uint32_t mask=0;
+    for(unsigned i=0;i<spans.size();++i){
+        const auto span=spans[i];
+        if(span.high<=span.low)continue;
+        mask|=std::uint32_t{1}<<i;
+        minZ[i]=tip.z+span.low-tolerance;
+        radius2[i]=span.radius*span.radius;
+    }
+    if(!mask)return true;
+    auto filter=[&](std::uint32_t active,const Bounds& bounds,double slack){
+        const double x=std::max({bounds.lo.x-tip.x,0.,tip.x-bounds.hi.x});
+        const double y=std::max({bounds.lo.y-tip.y,0.,tip.y-bounds.hi.y});
+        const double d2=x*x+y*y;
+        std::uint32_t retained=0;
+        for(;active;active&=active-1){
+            const auto i=std::countr_zero(active);
+            if(bounds.hi.z>=minZ[i]&&d2<=radius2[i]+slack)
+                retained|=std::uint32_t{1}<<i;
+        }
+        return retained;
+    };
+    struct Pending {unsigned node;std::uint32_t active;};
+    Pending pending[128]={{1,mask}};
+    size_t count=1;
+    while(count){
+        const auto [index,parents]=pending[--count];
+        const auto& node=data_->nodes[index];
+        const auto active=filter(parents,framed_?inFrame(node.box):node.box,eps);
+        if(!active)continue;
+        if(node.left){
+            pending[count++]={node.left,active};
+            pending[count++]={node.right,active};
+            continue;
+        }
+        for(unsigned i=node.begin;i<node.end;++i){
+            auto tri=data_->tris[i];
+            Bounds bounds=empty();
+            for(auto& point:tri.p){
+                if(framed_)point=inFrame(point);
+                extend(bounds,point);
+            }
+            for(auto rings=filter(active,bounds,1e-10);rings;rings&=rings-1){
+                const auto ring=std::countr_zero(rings);
+                if(triangleDrop(tri,tip.x,tip.y,spans[ring].radius,false)>=minZ[ring])return false;
+            }
+        }
+    }
+    return true;
+}
+
 double Tree::distance(V p)const{
     double best=inf;unsigned pending[128]={1};int count=1;
     while(count){
@@ -218,18 +278,22 @@ bool Tree::insideClosedMesh(V p)const{
     for(double z:hits)if(z-last>1e-7){++unique;last=z;}
     return unique%2!=0;
 }
-std::vector<std::array<double,2>> Tree::section(double x)const{
+std::vector<std::array<double,2>> Tree::section(double axial,bool axisY)const{
     std::vector<std::array<double,2>> out;
+    const auto axialOf=[axisY](V p){return axisY?p.y:p.x;};
+    const auto transverseOf=[axisY](V p){return axisY?-p.x:p.y;};
     unsigned pending[128]={1};int count=1;
     while(count){
         const auto& n=data_->nodes[pending[--count]];
-        if(x<n.box.lo.x||x>n.box.hi.x)continue;
+        if(axial<axialOf(n.box.lo)||axial>axialOf(n.box.hi))continue;
         if(n.left){pending[count++]=n.left;pending[count++]=n.right;continue;}
         for(unsigned i=n.begin;i<n.end;++i)for(int e=0;e<3;++e){
-            V a=data_->tris[i].p[e],b=data_->tris[i].p[(e+1)%3];
-            if(a.x==x)out.push_back({a.y,a.z});
-            if((a.x<x&&b.x>x)||(a.x>x&&b.x<x)){
-                V p=a+(b-a)*((x-a.x)/(b.x-a.x));out.push_back({p.y,p.z});
+            const V a=data_->tris[i].p[e],b=data_->tris[i].p[(e+1)%3];
+            const double a0=axialOf(a),b0=axialOf(b);
+            if(a0==axial)out.push_back({transverseOf(a),a.z});
+            if((a0<axial&&b0>axial)||(a0>axial&&b0<axial)){
+                const V p=a+(b-a)*((axial-a0)/(b0-a0));
+                out.push_back({transverseOf(p),p.z});
             }
         }
     }

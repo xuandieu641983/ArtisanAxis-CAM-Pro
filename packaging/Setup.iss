@@ -1,5 +1,5 @@
 #ifndef BuildVersion
-  #define BuildVersion "1.1.0"
+  #define BuildVersion "1.2.0"
 #endif
 [Setup]
 AppId=ArtisanAxis.XuanDieuCNC

@@ -1,0 +1,403 @@
+{
+  "fixture": "di lac 250.stl",
+  "sha256": "d516b62fef03595af1d9da1a8b2774012891e48bba88e8613cfc3d04528f7b07",
+  "triangles": 1056883,
+  "originalSizeMm": [
+    259.9036865,
+    94.990036,
+    73.69124
+  ],
+  "scaleXTargetMm": 250,
+  "fixtureConfirmed": false,
+  "cases": {
+    "driveSurface": {
+      "ok": true,
+      "seconds": 0.66,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 0,
+      "stages": []
+    },
+    "raster4x": {
+      "ok": true,
+      "verified": true,
+      "blocks": 39260,
+      "unreachable": 130,
+      "liftCount": 0,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 18.74,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 0,
+      "playbackFrames": 9816,
+      "stages": [
+        {
+          "group": 0,
+          "gouge": 0,
+          "remaining": 57462
+        }
+      ]
+    },
+    "strip5x": {
+      "ok": true,
+      "verified": false,
+      "blocks": 17532,
+      "unreachable": 139,
+      "liftCount": 203,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 3207,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3208,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3299,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 4246,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 13969,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16394,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 131.67,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 8767,
+      "stages": []
+    },
+    "qa-fast-4x": {
+      "ok": true,
+      "verified": false,
+      "blocks": 120207,
+      "unreachable": 2445,
+      "liftCount": 1305,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 90192,
+          "message": "Swept assembly collision or unresolved travel bound"
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 203.57,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 10929,
+      "stages": []
+    },
+    "qa-fast-5x": {
+      "ok": true,
+      "verified": false,
+      "blocks": 127216,
+      "unreachable": 2072,
+      "liftCount": 1124,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 71186,
+          "message": "Rapid rotary or lateral movement below safe plane"
+        },
+        {
+          "line": 93875,
+          "message": "Swept assembly collision or unresolved travel bound"
+        },
+        {
+          "line": 120994,
+          "message": "Swept assembly collision or unresolved travel bound"
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 445.7,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 11566,
+      "stages": []
+    },
+    "morning-full-4-4x": {
+      "ok": true,
+      "verified": false,
+      "blocks": 620181,
+      "unreachable": 18073,
+      "liftCount": 61993,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 354293,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 354313,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 360505,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 367880,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 369073,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 371562,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 373979,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 537330,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 558103,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 565591,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 567031,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 567780,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 607.62,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 11928,
+      "stages": []
+    },
+    "morning-fast-5-5x": {
+      "ok": true,
+      "verified": false,
+      "blocks": 127216,
+      "unreachable": 2072,
+      "liftCount": 1124,
+      "calibratedOffset": false,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Phá mặt dừng ở Z cục bộ 20.090 mm theo giới hạn hành trình mềm. Vật liệu thấp hơn được giữ lại."
+        },
+        {
+          "line": 93875,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 120994,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "seconds": 318.02,
+      "triangles": 1056883,
+      "originalLength": 259.9036865234375,
+      "displayedVertices": 18432,
+      "playbackFrames": 11566,
+      "stages": []
+    },
+    "full-5-s3-5x": {
+      "completed": false,
+      "lastProgress": {
+        "percent": 61,
+        "stage": "Chạy tinh R0.4",
+        "total": 1028,
+        "turn": 506
+      }
+    },
+    "mprj-raster-4": {
+      "ok": true,
+      "verified": true,
+      "ncOnDisk": false,
+      "blocks": 45781,
+      "unreachable": 521,
+      "liftCount": 0,
+      "diagnostics": [
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "gougedVoxels": 0
+    },
+    "mprj-strip-5-pos": {
+      "ok": true,
+      "verified": false,
+      "ncOnDisk": false,
+      "blocks": 17740,
+      "unreachable": 213,
+      "liftCount": 191,
+      "diagnostics": [
+        {
+          "line": 3382,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3383,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3474,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 4424,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 11814,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 15423,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 15465,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16597,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16602,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16644,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "gougedVoxels": 0
+    },
+    "mprj-strip-5-neg": {
+      "ok": true,
+      "verified": false,
+      "ncOnDisk": false,
+      "blocks": 17740,
+      "unreachable": 213,
+      "liftCount": 191,
+      "diagnostics": [
+        {
+          "line": 3382,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3383,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 3474,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 4424,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 11814,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 15423,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 15465,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16597,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16602,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 16644,
+          "message": "Phát hiện giao cắt bao dao với mô hình STL tại một tư thế của đoạn."
+        },
+        {
+          "line": 0,
+          "message": "Chưa xác nhận offset hệ máy hoặc thiếu giới hạn Z. Chỉ xem trước theo mô hình, chưa khóa được hành trình lúc chạy thật."
+        }
+      ],
+      "gougedVoxels": 0
+    }
+  }
+}

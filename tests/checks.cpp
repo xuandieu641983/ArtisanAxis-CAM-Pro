@@ -26,6 +26,9 @@ int main(int argc,char** argv){
     check(!profiles.current().value("offsetConfirmed").toBool(),"Reference offset is not measured calibration");
     check(profiles.axisCount()==5,"CM600 axis count");
     check(profiles.current().value("swingarmMm").toDouble()==232.918,"CM600 arm");
+    auto malformed=profiles.current();
+    malformed["headPivotFromTip"]=QJsonArray{78.7};
+    check(!MachineProfiles::validate(malformed).isEmpty(),"Malformed B head vector is rejected");
     check(profiles.current().value("limits").toObject().value("Z").toArray().at(0).toDouble()==-450,"CM600 lower Z");
     check(profiles.selectProfile("table-y"),"Select 4X Y");
     check(profiles.stockAxisDirection()==QVector3D(0,1,0),"4X Y direction");

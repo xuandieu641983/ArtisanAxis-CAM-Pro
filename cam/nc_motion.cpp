@@ -14,18 +14,17 @@ namespace cam {
 namespace {
 double norm(V q){return std::sqrt(dot(q,q));}
 double radians(double d){return std::abs(d)*std::numbers::pi/180.;}
-V headDelta(double b,double arm){return (tilt({0,0,1},b)-V{0,0,1})*arm;}
 bool tcp(const Machine& m){return m.dialect==Machine::Tcp434||m.dialect==Machine::Traori;}
 V command(Pose p,const Machine& m){
     if(tcp(m))return partPoint(p,m);
     auto q=p.tip;
-    if(m.dialect==Machine::Direct)q=q+headDelta(p.b,m.arm);
+    if(m.dialect==Machine::Direct)q=q+headCompensation(p.b,m);
     return world(q,0,m.axisY,m.pivot);
 }
 Pose decode(V xyz,double a,double b,const Machine& m){
     if(tcp(m))return {face(xyz,a,m.axisY,m.pivot),a,b};
     auto q=face(xyz,0,m.axisY,m.pivot);
-    if(m.dialect==Machine::Direct)q=q-headDelta(b,m.arm);
+    if(m.dialect==Machine::Direct)q=q-headCompensation(b,m);
     return {q,a,b};
 }
 bool usable(std::string_view p,const Machine& m){
@@ -51,7 +50,7 @@ double controllerSpeed(Pose a,Pose b,const Machine& m){
     }
     if(m.dialect==Machine::Direct){
         const double w=radians(a.b-b.b);
-        speed+=m.arm*w*w;
+        speed+=headBendRadius(m)*w*w;
     }
     return speed;
 }
@@ -67,8 +66,11 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
         if(m.axes==5)out<<" B"<<p.b*m.bSign;
     };
     Pose home=program.moves.front().pose;
-    home.a=home.b=0;home.tip.z=m.safe+.002;
+    home.a=home.b=0;home.tip.z=std::ceil(m.safe*1000)/1000+.002;
     // At neutral rotary coordinates the TCP and workpiece frames coincide.
+    // Retract vertically before the program can command any rotary or XY word.
+    out<<"(START WITH HEAD NEUTRAL AND G54 CALIBRATED)\n"
+       <<"G00 Z"<<(home.tip.z+m.pivot.z)<<'\n';
     row(home,"G00");out<<'\n';
     if(m.dialect==Machine::Tcp434)out<<"G43.4 H1\n";
     if(m.dialect==Machine::Traori)out<<"TRAORI\n";
@@ -96,7 +98,8 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
             }
         }
         row(p,move.kind==MotionKind::Rapid?"G00":"G01");
-        if(move.kind!=MotionKind::Rapid)out<<" F"<<(move.kind==MotionKind::Approach?std::min(250.,move.feed):move.feed);
+        if(move.kind!=MotionKind::Rapid)
+            out<<" F"<<(move.kind==MotionKind::Cut?move.feed:std::min(250.,move.feed));
         out<<'\n';previous=p;
     }
     if(m.dialect==Machine::Tcp434)out<<"G49\n";
@@ -107,7 +110,7 @@ std::string writeMotionNc(const Spiral& program,const Machine& m,std::string_vie
 Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::vector<Cutter>& tools,MotionChecks& checks,const NcProgress& progress){
     Verified output;
     unsigned number=0;int tool=-1,pass=0;
-    bool compensation=false,spindle=false,ended=false,units=false,absolute=false,feedMode=false,work=false;
+    bool compensation=false,spindle=false,ended=false,units=false,absolute=false,feedMode=false,work=false,startupLift=false;
     std::optional<Pose> previous;V previousCommand;
     const auto bytes=contents.size();
     const auto concurrency=std::max(1u,std::thread::hardware_concurrency());
@@ -121,14 +124,14 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
     };
     std::vector<Segment> queue;
     queue.reserve(batchSize);
-    auto addIssue=[&](unsigned line,std::string text){
-        if(output.errors.size()<1000)output.errors.push_back({line,std::move(text)});
+    auto addIssue=[&](unsigned line,std::string text,SweepFailure failure=SweepFailure::None){
+        if(output.errors.size()<1000)output.errors.push_back({line,std::move(text),failure});
     };
     auto problem=[&](std::string text){addIssue(number,std::move(text));};
     auto verifyQueue=[&]{
         if(queue.empty())return;
         const auto threads=std::min<size_t>(concurrency,(queue.size()+63)/64);
-        std::vector<unsigned char> failures(queue.size(),0);
+        std::vector<SweepFailure> failures(queue.size(),SweepFailure::None);
         std::vector<std::exception_ptr> errors(threads);
         auto compute=[&](size_t id){
             try{
@@ -139,7 +142,7 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
                         const auto rotary=interpolate(step.from,step.to,ratio);
                         return decode(step.commandFrom+(step.commandTo-step.commandFrom)*ratio,rotary.a,rotary.b,m);
                     };
-                    failures[i]=!local.sweep(step.from,step.to,tools[size_t(step.tool)],actual,step.speed,step.minimumZ,TipCheck::NcRounded);
+                    local.sweep(step.from,step.to,tools[size_t(step.tool)],actual,step.speed,step.minimumZ,TipCheck::NcRounded,&failures[i]);
                 }
             }catch(...){errors[id]=std::current_exception();}
         };
@@ -149,8 +152,8 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
             compute(0);
         }
         for(const auto& error:errors)if(error)std::rethrow_exception(error);
-        for(size_t i=0;i<queue.size();++i)if(failures[i])
-            addIssue(queue[i].line,"Swept assembly collision or unresolved travel bound");
+        for(size_t i=0;i<queue.size();++i)if(failures[i]!=SweepFailure::None)
+            addIssue(queue[i].line,"Swept assembly collision or unresolved travel bound",failures[i]);
         queue.clear();
         if(progress)progress(bytes-contents.size(),bytes);
     };
@@ -232,6 +235,16 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
             if(parsed.ec!=std::errc{}||parsed.ptr!=word.data()+word.size()||!std::isfinite(value)){valid=false;break;}
             words[index]=value;
         }
+        if(valid&&rapid&&!previous&&words[2]&&!words[0]&&!words[1]&&!words[3]&&!words[4]&&!words[5]){
+            const auto localZ=*words[2]-m.pivot.z;
+            const auto machineZ=*words[2]+m.machineOffset.z;
+            const auto limits=m.limits[2];
+            if(startupLift||!units||!absolute||!feedMode||!work||localZ<m.safe-.0001||
+               (limits&&(machineZ<(*limits)[0]||machineZ>(*limits)[1])))
+                problem("Invalid startup Z retract");
+            startupLift=true;
+            continue;
+        }
         if(!valid||!words[0]||!words[1]||!words[2]||!words[3]||(words[4].has_value()!=(m.axes==5))||
            (rapid&&words[5])||(!rapid&&(!words[5]||*words[5]<=0))){
             problem("Invalid or unexpected axis/feed word");continue;
@@ -264,8 +277,14 @@ Verified verifyMotionNc(std::string_view contents,const Machine& m,const std::ve
                 if(queue.size()==batchSize)verifyQueue();
             }
         }
-        const bool plunge=!rapid&&previous&&previous->tip.z>=m.safe-.0001;
-        output.motions.push_back({pose,tool,pass,rapid?MotionKind::Rapid:plunge?MotionKind::Approach:MotionKind::Cut,number,words[5].value_or(3000)});
+        auto kind=rapid?MotionKind::Rapid:MotionKind::Cut;
+        if(!rapid&&previous){
+            const bool wasClear=previous->tip.z>=m.safe-.0001;
+            const bool isClear=pose.tip.z>=m.safe-.0001;
+            if(!wasClear&&isClear)kind=MotionKind::Retract;
+            else if(wasClear)kind=MotionKind::Approach;
+        }
+        output.motions.push_back({pose,tool,pass,kind,number,words[5].value_or(3000)});
         previous=pose;previousCommand=xyz;
     }
     verifyQueue();

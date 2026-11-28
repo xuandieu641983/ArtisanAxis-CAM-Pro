@@ -68,6 +68,35 @@ int main(){
     V normal,otherNormal;auto w=wrap.eval(0,.4,&normal),w1=wrap.eval(1,.4,&otherNormal);
     check(norm(w-w1)<1e-12&&norm(normal-otherNormal)<1e-12&&std::abs(norm(normal)-1)<1e-12,"Periodic seam and normal");
     check(std::abs(wrap.eval(.4,0).x-0)<1e-5&&std::abs(wrap.eval(.4,1).x-30)<1e-5,"Clamped axial ends");
+    check(dot(normal,{0,1,0})>.999&&w.y>=2.99,"Offset section and outward normal");
+    const auto side=cube({10,3,-2},{20,9,2});
+    auto asymmetric=solid;
+    asymmetric.insert(asymmetric.end(),side.begin(),side.end());
+    const auto wrapX=Wrap::fit(Tree(asymmetric),40,24,1);
+    check(wrapX.eval(0,.12).y<4&&wrapX.eval(0,.5).y>9.5,"Adaptive envelope follows actual wide and narrow sections");
+    const V pivot{12,19,-4};
+    for(auto& tri:asymmetric)for(auto& point:tri.p)point=world(point,0,true,pivot);
+    const Tree yTree(asymmetric);
+    const auto wrapY=Wrap::fit(yTree,40,24,1,true,pivot);
+    check(!yTree.section(pivot.y+15,true).empty(),"Sections follow a Y-mounted rotary axis");
+    for(double u:{0.,.011,.25,.49,.77,.99})for(double v:{.03,.2,.51,.89,.96}){
+        V nx,ny;
+        auto dx=wrapX.eval(u,v,&nx),dy=wrapY.eval(u,v,&ny);
+        check(std::abs(dy.y-(pivot.y+30*v))<1e-10&&std::abs(wrapY.axialParameter(30*v)-v)<1e-13,
+              "Greville stations reproduce true local axial position");
+        check(norm(world(dx,0,true,pivot)-dy)<1e-10&&norm(world(nx,0,true)-ny)<1e-10,
+              "Translated Y guide agrees with the equivalent X guide");
+        const auto du=wrapY.eval(u+1e-6,v)-wrapY.eval(u-1e-6,v);
+        const auto dv=wrapY.eval(u,v+1e-6)-wrapY.eval(u,v-1e-6);
+        check(dot(ny,unit(cross(du,dv)))>.999999,"Analytic normal agrees with finite differences");
+    }
+    bool rejectedDegenerate=false;
+    try {
+        auto unused=Wrap::fit(Tree({Tri{{{0,0,0},{15,0,0},{30,0,2}}}}),20,12,1);
+        (void)unused;
+    } catch(const std::invalid_argument&) {rejectedDegenerate=true;}
+    check(rejectedDegenerate,"A mesh without a surface section must not invent a bounding box guide");
+    std::cout<<"Drive surface: STL sections, local axial map, frame-equivariance and normals passed\n";
     int falseAccepts=0,falseRejects=0;
     std::array<Span,4> spans{{{0,1,.8},{1,3,1.5},{3,8,2},{8,15,4}}};
     for(const auto span:spans){
@@ -77,6 +106,21 @@ int main(){
     }
     std::cout<<"4-Span fixture: "<<falseAccepts<<" colliding poses accepted, "<<falseRejects<<" clear poses rejected\n";
     check(!falseAccepts&&!falseRejects,"Four envelope collision fixtures");
+    const std::array<Span,6> rings{{
+        {0.4,12,.6},{1.1,12,1.1},{3,12,1.5},{12,19,2},{19,59,5},{0,0,9}
+    }};
+    size_t envelopeQueries=0;
+    for(double a:{0.,17.,90.,181.2,270.})for(double b:{-14.,0.,19.}){
+        auto query=ball;
+        query.setFrame(a,false,{},b);
+        for(int y=-5;y<=5;++y)for(int z=-3;z<=8;++z){
+            const V tip{0.,double(y),double(z)};
+            const bool separate=std::all_of(rings.begin(),rings.end(),[&](Span ring){return query.spanClear(tip,ring);});
+            check(separate==query.spansClear(tip,rings),"Shared BVH traversal matches ring-by-ring classification");
+            ++envelopeQueries;
+        }
+    }
+    std::cout<<"Shared BVH assembly checks: "<<envelopeQueries<<" match independent spans\n";
     const std::vector<Cutter> tools{{4,0,0,10,5,3},{2,1,0,12,5,3}};
     const StockSpec stock{{{0,-4,-4},{30,4,4}},0,.5,false};
     auto plan=generate(solid,stock,tools,{{0,0,2,.5,false},{0,180,2,.5,false},{1,-1,3,0,true}},true,{},56);
@@ -93,6 +137,14 @@ int main(){
     check(std::any_of(floor2.cuts.begin(),floor2.cuts.end(),[](Cut c){return c.point.z==-1;}),"2-face can reach minus one when clear");
     auto floor4=generate(narrow,wide,longTools,{{0,0,2,.5,false}},false,{},59);
     check(!floor4.cuts.empty()&&std::all_of(floor4.cuts.begin(),floor4.cuts.end(),[](Cut c){return c.point.z>=1.;}),"4-face preserves center core");
+    PathSpec layers{0,0,2,.5,false};
+    layers.stepDown=.75;
+    const auto levels=generate(narrow,wide,longTools,{layers},false,{},59);
+    check(levels.cuts.size()>1&&levels.cuts.front().point.z>levels.cuts.back().point.z,
+          "Raster uses distinct Z layers");
+    for(size_t i=1;i<levels.cuts.size();++i)
+        check(levels.cuts[i].point.z<=levels.cuts[i-1].point.z,
+              "Raster sweeps each common Z plane before descending");
     std::cout<<"Sample 2-face + rotary: "<<plan.cuts.size()<<" moves, "<<plan.rejected<<" rejected; four faces: "<<four.cuts.size()<<" moves\n";
     for(auto post:{"shanlong4","jd45","jd50","mach3","weihong4","syntec4","richauto"}){
         const auto nc=writeNc(plan,post,false,{},1);

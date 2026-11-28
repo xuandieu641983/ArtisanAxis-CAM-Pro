@@ -1,3 +1,54 @@
+# Nghiệm thu ArtisanAxis CAM Pro v1.2.0
+
+Ngày 28/11/2026 · Xuân Diệu CNC
+
+Bản này bổ sung lượt rút dao 5X dùng tốc độ ăn dao đến mặt phẳng an toàn trước G00. Bộ đọc lại đánh dấu lượt rút riêng để mô phỏng báo khi rút chạm gỗ còn lại. Chẩn đoán phân biệt vượt hành trình, giao cắt bao dao tại một tư thế và khoảng hở đoạn chưa được chứng minh.
+
+## Hồi quy và kiểm tra tích hợp
+
+| Hạng mục | Kết quả |
+|---|---|
+| CTest Release trên Linux x64 | 10/10 đạt trong 95,22 giây. |
+| Mặt dẫn | Đối chiếu tiết diện STL, tâm bàn quay, A dọc X/Y, đường ghép chu vi, pháp tuyến và ô hiện/ẩn ở cây dự án. |
+| BVH chống va chạm | 1.980 phép kiểm thân và bầu kẹp gộp cho cùng kết quả với kiểm từng tiết diện. Các ca va giữa hai đầu mút được phát hiện. |
+| Tích hợp 4X và 5X CM600 trên mẫu tổng hợp | Bốn mặt, phá tròn, tinh, ba trạng thái phôi và đọc lại NC. 4X có 2.450 khối, 5X có 1.964 khối, 0 voxel mẫu bị khoét. |
+| Đầu B lệch tâm | Kiểm thử vectơ từ mũi dao đến tâm B cho hành trình Z bất đối xứng. Hộp thoại bỏ dấu xác nhận cũ sau khi đổi tọa độ, tay đòn hoặc động học nâng cao. |
+| Lead/Lean và liên tục góc | 493 khối NC qua kiểm chứng với chiều B đảo và giới hạn B bất đối xứng. Ca SLERP đi qua ranh 360° theo cung ngắn và chiếu lại tiếp xúc trên STL. |
+| Cập nhật | 9/9 mô phỏng trên PowerShell 7, cộng kiểm thử Qt lưu và mở lại cấu hình. Chưa cài hoặc khôi phục bằng Setup.exe trên Windows. |
+| Rhino/OpenNURBS | CAMWorker Release đọc mẫu 3DM trên Linux, 1 mặt và 2.401 mẫu pháp tuyến. |
+
+Trong mô phỏng, bộ đọc NC kiểm hành trình, lệnh khởi tạo và chuyển động theo máy mô hình. Kiểm tra phôi còn lại lấy mẫu voxel. Tệp NC cuối chỉ được cấp khi qua kiểm chứng và offset được xác nhận rõ trong hồ sơ.
+
+## Mẫu thật Di Lặc
+
+Ba tệp STL đính kèm có cùng SHA-256 và 1.056.883 tam giác. Kích thước đọc từ lưới là **259,904 × 94,990 × 73,691 mm**. Các ca thử co riêng chiều X về 250 mm, giữ Y/Z, dùng phôi hộp 250 × 100 × 80 mm, nhấc tối thiểu 114,031 mm. Dùng hồ sơ CM600 tham chiếu với Z mềm −450 đến +200 mm và offset Z −470,090 mm ở trạng thái chưa xác nhận. Dữ liệu dao, lượng dư và feed dùng trong ca nằm tại `tools/qa-dilac`.
+
+| Ca thử trên STL thật | Kết quả |
+|---|---|
+| Mặt dẫn | 18.432 đỉnh hiển thị trong 0,66 giây. |
+| Phá 4 mặt · 4X | 39.260 khối trong 18,74 giây, 0 voxel mẫu bị khoét và 130 vị trí không tới. Kiểm chứng mẫu đạt. Z cục bộ dừng ở 20,090 mm theo giới hạn mềm. |
+| Ba công đoạn 5X · X 122–125 mm | Bước dọc 0,22 mm, Lead 5°, Lean 8°. 17.532 khối trong 131,67 giây, bị bộ kiểm chứng chặn xuất · 6 mục báo giao cắt bao dao. |
+| Chẩn đoán 4X toàn chiều dài trước sửa rút dao · bước 2,5 mm | Khoảng lấy mẫu quanh chu vi 4 mm. 120.207 khối trong 203,57 giây, bị bộ kiểm chứng chặn xuất · 1 đoạn nối báo va chạm hoặc cận khoảng hở chưa đủ. |
+| Chẩn đoán 5X toàn chiều dài trước sửa rút dao · bước 2,5 mm | Khoảng lấy mẫu quanh chu vi 4 mm. 127.216 khối trong 445,70 giây, bị bộ kiểm chứng chặn xuất · 2 đoạn nối báo va chạm hoặc cận khoảng hở chưa đủ, 1 cảnh báo chạy nhanh dưới mặt phẳng an toàn. |
+| Chẩn đoán 4X toàn chiều dài · bước 0,22 mm | Khoảng lấy mẫu quanh chu vi 4 mm. 620.181 khối trong 607,62 giây, bị bộ kiểm chứng chặn xuất · 12 mục báo giao cắt bao dao. |
+| Chẩn đoán 5X toàn chiều dài · bước 2,5 mm | Khoảng lấy mẫu quanh chu vi 4 mm. 127.216 khối trong 318,02 giây, bị bộ kiểm chứng chặn xuất · 2 mục báo giao cắt bao dao. |
+| Chẩn đoán 5X toàn chiều dài trước sửa rút dao · bước 0,22 mm | Ca chẩn đoán chưa có kết quả cuối. Mốc đã ghi nhận 506/1028 vòng. |
+| Phá bốn mặt 4X với tâm A và dải Z đọc từ MPRJ | 45.781 khối, qua bộ kiểm chứng mô hình. |
+| Dải 5X X122–125 mm dùng giả định vectơ X +78,7 mm | 17.740 khối, bị bộ kiểm chứng chặn xuất · 10 mục báo giao cắt bao dao. |
+| Dải 5X X122–125 mm dùng giả định vectơ X −78,7 mm | 17.740 khối, bị bộ kiểm chứng chặn xuất · 10 mục báo giao cắt bao dao. |
+
+Các ca so sánh MPRJ giữ xác nhận hiệu chuẩn tắt. Các số ±78,7 mm ở bảng là giả định độ nhạy, còn giá trị Z của vectơ thử là 232,9175 mm. Không dùng các giả định đó để thay thông số máy.
+
+Bước dọc 2,5 mm dùng để kiểm tra chuỗi công đoạn toàn hình. Các ca này chưa đánh giá chất lượng tinh ở 0,22 mm. Chưa nghiệm thu NC chạy máy cho toàn tượng. Giới hạn Z tham chiếu giữ lại phần vật liệu thấp hơn, và bộ kiểm chứng còn từ chối một số đoạn nối trên mẫu thật. Cần kiểm chứng lại với offset, giới hạn, dao và đồ gá được xác nhận trên máy xưởng. Chứng cứ công khai mô tả cách thao tác HongFa và PowerMill. Chưa có bộ NC đối chứng cùng hình học để đo tương đương 100%.
+
+## Tài liệu
+
+- Đối chiếu bản nền trong `DOI_CHIEU_LOI_CAM.md`. Hồ sơ MPRJ và chương trình TAP đã chạy thử được phân tích trong `DOI_CHIEU_CM600.md`.
+- Dùng `tools/qa-dilac/run.py` để chạy lại STL thật. Kết quả theo từng ca và số dòng chẩn đoán có trong `tools/qa-dilac/results-v1.2.0.json`.
+- Mở cấu hình và nguồn cập nhật theo `HUONG_DAN_CAI_DAT_VA_CAP_NHAT.md`.
+
+## Biên bản phiên bản trước
+
 # Nghiệm thu ArtisanAxis CAM Pro v1.1.0
 
 Ngày 27/11/2026 · Xuân Diệu CNC
